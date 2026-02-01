@@ -14,10 +14,104 @@ const loadingEl = document.getElementById('loading');
 const assemblyModeBtn = document.getElementById('assembly-mode-btn');
 const assemblyIndicator = document.getElementById('assembly-indicator');
 
+// Solana mint UI elements (created dynamically)
+let mintProgressOverlay = null;
+let mintStatusText = null;
+
 let sceneManager;
 let handController;
 let lastTime = 0;
 let assemblyModeActive = false;
+
+/**
+ * Create Solana mint UI overlay
+ */
+function createMintUI() {
+  // Mint progress overlay
+  mintProgressOverlay = document.createElement('div');
+  mintProgressOverlay.id = 'mint-progress-overlay';
+  mintProgressOverlay.className = 'fixed inset-0 pointer-events-none z-40 hidden';
+  mintProgressOverlay.innerHTML = `
+    <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center">
+      <div id="mint-progress-ring" class="w-32 h-32 mx-auto mb-4 relative">
+        <svg class="w-full h-full" viewBox="0 0 100 100">
+          <circle cx="50" cy="50" r="45" fill="none" stroke="#333" stroke-width="8"/>
+          <circle id="mint-progress-circle" cx="50" cy="50" r="45" fill="none" 
+            stroke="url(#solanaGradient)" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="283" stroke-dashoffset="283"
+            transform="rotate(-90 50 50)"/>
+          <defs>
+            <linearGradient id="solanaGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#00FFA3"/>
+              <stop offset="100%" stop-color="#DC1FFF"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="absolute inset-0 flex items-center justify-center">
+          <span id="mint-progress-text" class="text-2xl font-bold text-white">0%</span>
+        </div>
+      </div>
+      <p id="mint-status" class="text-white text-lg font-medium">Hold double-pinch to mint...</p>
+    </div>
+  `;
+  document.body.appendChild(mintProgressOverlay);
+
+  // Demo confirmation button (for testing without wallet)
+  const demoBtn = document.createElement('button');
+  demoBtn.id = 'demo-confirm-btn';
+  demoBtn.className = 'fixed bottom-4 right-4 bg-gradient-to-r from-green-400 to-purple-500 text-black px-4 py-2 rounded-lg font-bold z-50 hidden hover:scale-105 transition-transform';
+  demoBtn.innerHTML = '✓ Simulate Mint Confirm';
+  demoBtn.addEventListener('click', () => {
+    if (sceneManager) {
+      sceneManager.onMintConfirmed('demo_' + Date.now().toString(36));
+      demoBtn.classList.add('hidden');
+      hideMintProgress();
+    }
+  });
+  document.body.appendChild(demoBtn);
+}
+
+/**
+ * Show mint progress UI
+ */
+function showMintProgress() {
+  if (mintProgressOverlay) {
+    mintProgressOverlay.classList.remove('hidden');
+  }
+}
+
+/**
+ * Hide mint progress UI
+ */
+function hideMintProgress() {
+  if (mintProgressOverlay) {
+    mintProgressOverlay.classList.add('hidden');
+  }
+}
+
+/**
+ * Update mint progress ring
+ * @param {number} progress - 0 to 1
+ */
+function updateMintProgress(progress) {
+  const circle = document.getElementById('mint-progress-circle');
+  const text = document.getElementById('mint-progress-text');
+  const status = document.getElementById('mint-status');
+  
+  if (circle && text) {
+    const offset = 283 * (1 - progress);
+    circle.style.strokeDashoffset = offset;
+    text.textContent = Math.round(progress * 100) + '%';
+  }
+  
+  if (status) {
+    if (progress < 1) {
+      status.textContent = 'Hold double-pinch to mint...';
+    } else {
+      status.textContent = '🚀 Generating Blink...';
+    }
+  }
+}
 
 /**
  * Draw MediaPipe landmarks on overlay canvas for debugging
@@ -73,19 +167,33 @@ function drawWebcam(ctx, canvas, landmarks, gesture) {
   // Show pinch status
   if (gesture) {
     let status;
-    if (assemblyModeActive) {
+    if (gesture.doublePinchHold) {
+      // Show mint progress
+      const pct = Math.round(gesture.doublePinchProgress * 100);
+      status = `🚀 MINTING: ${pct}%`;
+      ctx.fillStyle = '#00FFA3'; // Solana green
+    } else if (assemblyModeActive) {
       status = gesture.isPinching ? 'GRABBING' : 'Pinch to grab';
+      ctx.fillStyle = gesture.isPinching ? '#00ff00' : '#ffffff';
     } else {
       status = gesture.isPinching ? `PINCH: ${gesture.pinchZone.toUpperCase()}` : 'Open hand';
+      ctx.fillStyle = gesture.isPinching ? '#00ff00' : '#ffffff';
     }
-    ctx.fillStyle = gesture.isPinching ? '#00ff00' : '#ffffff';
     ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(status, w / 2, h - 10);
-    // Show pinch distance for debugging
-    ctx.font = '10px sans-serif';
-    ctx.fillStyle = '#aaa';
-    ctx.fillText(`dist: ${gesture.pinchDistance.toFixed(3)}`, w / 2, h - 25);
+    
+    // Show double-pinch hint
+    if (!gesture.doublePinchHold && !assemblyModeActive) {
+      ctx.font = '9px sans-serif';
+      ctx.fillStyle = '#888';
+      ctx.fillText('Double-pinch + hold 2s = Mint NFT', w / 2, h - 25);
+    } else {
+      // Show pinch distance for debugging
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = '#aaa';
+      ctx.fillText(`dist: ${gesture.pinchDistance.toFixed(3)}`, w / 2, h - 25);
+    }
   }
 
   // Draw landmarks if present
@@ -131,6 +239,9 @@ function drawWebcam(ctx, canvas, landmarks, gesture) {
 
 
 async function init() {
+  // Create Solana mint UI
+  createMintUI();
+
   sceneManager = new SceneManager(container, {
     smoothingFactor: 0.12,
     zoomSensitivity: 2,
@@ -141,6 +252,17 @@ async function init() {
   handController = new HandController({
     smoothingFactor: 0.15,
     rotationSensitivity: 3,
+    // Double-pinch hold callback for Solana mint
+    onDoublePinchHold: (handData) => {
+      console.log('🎯 Double-pinch hold detected! Triggering mint...');
+      sceneManager.triggerMintFlow(handData);
+      
+      // Show demo confirm button
+      const demoBtn = document.getElementById('demo-confirm-btn');
+      if (demoBtn) {
+        demoBtn.classList.remove('hidden');
+      }
+    }
   });
 
   console.log('Initializing hand controller...');
@@ -182,6 +304,20 @@ async function init() {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
     const gesture = handController.getGesture();
+    const mintState = sceneManager.getMintingState();
+    
+    // Update mint progress UI
+    if (gesture.doublePinchHold && !mintState.isActive && !mintState.isCertified) {
+      showMintProgress();
+      updateMintProgress(gesture.doublePinchProgress);
+    } else if (!gesture.doublePinchHold && !mintState.isActive) {
+      hideMintProgress();
+    }
+    
+    // Update minting flow (Blink card position)
+    if (mintState.isActive) {
+      sceneManager.updateMintingFlow(gesture);
+    }
     
     if (assemblyModeActive) {
       // In assembly mode: handle grab/attach logic, model is frozen
@@ -191,7 +327,7 @@ async function init() {
       sceneManager.updateFromGesture(gesture, delta);
     }
     
-    sceneManager.render();
+    sceneManager.render(delta);
     
     // Redraw webcam every frame
     if (!webcamOverlay.classList.contains('hidden')) {

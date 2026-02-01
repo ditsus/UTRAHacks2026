@@ -1,10 +1,21 @@
 /**
  * SceneManager - Three.js 3D scene with GLTF/GLB loading
  * Handles model Group rotation/zoom via gesture input with lerp smoothing.
+ * Integrates Solana Actions/Blinks for NFT minting.
  */
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { SolanaBlink } from './SolanaBlink.js';
+import { ConfettiEffect, createCertifiedBadgeMesh } from './ConfettiEffect.js';
+import { 
+  generateRobotMetadata, 
+  createActionPayload, 
+  generateBlinkUrl, 
+  getAssemblyData,
+  captureSceneSnapshot,
+  MINT_COST_SOL
+} from './solanaAction.js';
 
 export class SceneManager {
   constructor(container, options = {}) {
@@ -70,6 +81,18 @@ export class SceneManager {
     // Require pinch release before allowing grab (prevents auto-grab on mode entry)
     this.hasPinchReleased = false;
 
+    // Solana Blink / NFT Minting state
+    this.solanaBlink = null;
+    this.confettiEffect = null;
+    this.mintingState = {
+      isActive: false,           // Blink card is showing
+      isProcessing: false,       // Waiting for transaction
+      isCertified: false,        // NFT minted, model locked
+      blinkUrl: null,
+      metadata: null,
+      certifiedBadge: null
+    };
+    this.currentModelName = 'Robot Assembly';
   }
 
   lerp(a, b, t) {
@@ -134,6 +157,10 @@ export class SceneManager {
     
     // Mouse controls
     this.setupMouseControls();
+    
+    // Initialize Solana Blink and Confetti
+    this.solanaBlink = new SolanaBlink(this.scene, this.camera, this.container);
+    this.confettiEffect = new ConfettiEffect(this.scene);
     
     return this;
   }
@@ -1049,5 +1076,224 @@ export class SceneManager {
         else child.material.dispose();
       }
     });
+  }
+
+  // ============================================
+  // SOLANA BLINK / NFT MINTING METHODS
+  // ============================================
+
+  /**
+   * Trigger Solana mint flow (called on double-pinch hold)
+   * @param {Object} handData - Hand position data
+   */
+  async triggerMintFlow(handData) {
+    if (this.mintingState.isActive || this.mintingState.isCertified) {
+      console.log('Mint flow already active or model already certified');
+      return;
+    }
+
+    console.log('🚀 Triggering Solana mint flow...');
+    this.mintingState.isActive = true;
+
+    try {
+      // Capture current assembly state
+      const assemblyData = getAssemblyData(this);
+      assemblyData.thumbnailBase64 = captureSceneSnapshot(this.renderer, this.scene, this.camera);
+
+      // Generate metadata
+      const metadata = generateRobotMetadata(assemblyData);
+      this.mintingState.metadata = metadata;
+
+      // Create Action payload
+      const actionPayload = createActionPayload(metadata);
+      
+      // Generate Blink URL (for real use, this would point to your action server)
+      // For demo, we'll create a local-style URL
+      const actionUrl = `${window.location.origin}/api/actions/mint`;
+      const blinkUrl = generateBlinkUrl(actionUrl);
+      this.mintingState.blinkUrl = blinkUrl;
+
+      console.log('📱 Blink URL:', blinkUrl);
+      console.log('📦 Metadata:', metadata);
+
+      // Create and show the 3D Blink card
+      await this.solanaBlink.createBlinkCard(blinkUrl, metadata);
+      
+      // Position near hand
+      const handWorldPos = this.handToWorld(handData.centroidX, handData.centroidY, 2);
+      this.solanaBlink.updatePosition(handWorldPos);
+      this.solanaBlink.show();
+
+    } catch (error) {
+      console.error('Failed to trigger mint flow:', error);
+      this.mintingState.isActive = false;
+    }
+  }
+
+  /**
+   * Update Blink card position (call in render loop when minting)
+   * @param {Object} gesture - Current gesture data
+   */
+  updateMintingFlow(gesture) {
+    if (!this.mintingState.isActive) return;
+
+    // Update blink card position to follow hand
+    if (gesture.hasHand) {
+      const handWorldPos = this.handToWorld(gesture.centroidX, gesture.centroidY, 2);
+      this.solanaBlink.updatePosition(handWorldPos);
+    }
+
+    // Update the CSS3D renderer
+    this.solanaBlink.update();
+
+    // Update confetti if active
+    if (this.confettiEffect) {
+      this.confettiEffect.update();
+    }
+  }
+
+  /**
+   * Cancel the mint flow (e.g., on gesture to dismiss)
+   */
+  cancelMintFlow() {
+    if (!this.mintingState.isActive) return;
+
+    console.log('❌ Mint flow cancelled');
+    this.mintingState.isActive = false;
+    this.mintingState.blinkUrl = null;
+    this.mintingState.metadata = null;
+    this.solanaBlink.hide();
+    this.solanaBlink.removeBlinkCard();
+  }
+
+  /**
+   * Simulate transaction confirmation (for demo purposes)
+   * In production, this would be called by webhook/websocket
+   * @param {string} signature - Transaction signature
+   */
+  onMintConfirmed(signature = 'demo_signature') {
+    if (!this.mintingState.isActive) return;
+
+    console.log('✅ Mint confirmed! Signature:', signature);
+    this.mintingState.isProcessing = false;
+    this.mintingState.isCertified = true;
+
+    // Hide blink card
+    this.solanaBlink.hide();
+    this.solanaBlink.removeBlinkCard();
+    this.mintingState.isActive = false;
+
+    // Trigger confetti celebration
+    this.confettiEffect.burst(new THREE.Vector3(0, 1, 0));
+
+    // Add "Certified on Solana" badge
+    this.addCertifiedBadge();
+
+    // Lock the model (disable further edits)
+    this.lockModel();
+  }
+
+  /**
+   * Add the "Certified on Solana" badge to the model
+   */
+  addCertifiedBadge() {
+    const badge = createCertifiedBadgeMesh();
+    
+    // Position above the model
+    badge.position.set(0, 2.5, 0);
+    
+    // Add floating animation
+    badge.userData.floatOffset = 0;
+    badge.userData.floatSpeed = 2;
+    
+    this.mintingState.certifiedBadge = badge;
+    this.contentGroup.add(badge);
+  }
+
+  /**
+   * Lock the model after certification (disable assembly mode)
+   */
+  lockModel() {
+    // Exit assembly mode if active
+    if (this.assemblyMode) {
+      this.exitAssemblyMode();
+    }
+
+    // Apply certified material effect to all parts
+    this.modelGroup.traverse((child) => {
+      if (child.material) {
+        // Add subtle golden tint to indicate certification
+        if (child.material.emissive) {
+          child.material.emissive.setHex(0x332200);
+          child.material.emissiveIntensity = 0.1;
+        }
+      }
+    });
+
+    console.log('🔒 Model locked - Certified on Solana');
+  }
+
+  /**
+   * Update certified badge animation (call in render loop)
+   */
+  updateCertifiedBadge(delta) {
+    const badge = this.mintingState.certifiedBadge;
+    if (!badge) return;
+
+    // Floating animation
+    badge.userData.floatOffset += delta * badge.userData.floatSpeed;
+    badge.position.y = 2.5 + Math.sin(badge.userData.floatOffset) * 0.1;
+
+    // Always face camera
+    badge.lookAt(this.camera.position);
+  }
+
+  /**
+   * Check if double-pinch hold should trigger mint
+   * @param {Object} gesture - Gesture data with doublePinchTriggered
+   */
+  checkMintTrigger(gesture) {
+    if (gesture.doublePinchTriggered && !this.mintingState.isActive && !this.mintingState.isCertified) {
+      this.triggerMintFlow({
+        centroidX: gesture.centroidX,
+        centroidY: gesture.centroidY,
+        handSize: gesture.handSize
+      });
+    }
+  }
+
+  /**
+   * Render method - call in animation loop
+   */
+  render(delta = 0.016) {
+    // Update confetti
+    if (this.confettiEffect) {
+      this.confettiEffect.update();
+    }
+
+    // Update certified badge
+    if (this.mintingState.isCertified) {
+      this.updateCertifiedBadge(delta);
+    }
+
+    // Update Solana Blink (CSS3D renderer)
+    if (this.solanaBlink && this.mintingState.isActive) {
+      this.solanaBlink.update();
+    }
+
+    // Main render
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Get minting state for UI
+   */
+  getMintingState() {
+    return {
+      isActive: this.mintingState.isActive,
+      isProcessing: this.mintingState.isProcessing,
+      isCertified: this.mintingState.isCertified,
+      blinkUrl: this.mintingState.blinkUrl
+    };
   }
 }

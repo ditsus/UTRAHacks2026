@@ -15,6 +15,7 @@ export class HandController {
   constructor(options = {}) {
     this.onGesture = options.onGesture || (() => {});
     this.onLandmarks = options.onLandmarks || (() => {});
+    this.onDoublePinchHold = options.onDoublePinchHold || (() => {}); // New: Solana mint trigger
     this.smoothingFactor = options.smoothingFactor ?? 0.15;
 
     this.handLandmarker = null;
@@ -40,6 +41,20 @@ export class HandController {
     this.rotationSensitivity = options.rotationSensitivity ?? 3;
     // Pinch threshold: distance below this = pinching (actions only when pinching)
     this.pinchThreshold = options.pinchThreshold ?? 0.18;
+
+    // Double pinch detection for Solana mint
+    this.doublePinchState = {
+      lastPinchEnd: 0,         // Timestamp when last pinch ended
+      pinchCount: 0,           // Number of consecutive quick pinches
+      isHolding: false,        // Currently holding a double-pinch
+      holdStartTime: 0,        // When the hold started
+      holdDuration: 1500,      // Required hold time (1.5 seconds - reduced for reliability)
+      doublePinchWindow: 600,  // Max time between pinches to count as double
+      triggered: false,        // Has the callback been triggered
+      wasTriggered: false,     // Prevent re-triggering until release
+      progress: 0              // 0-1 progress of hold
+    };
+    this.wasPinching = false;
   }
 
   /**
@@ -178,6 +193,9 @@ export class HandController {
     // Left half (x < 0.5): pinch → zoom. Right half: pinch → rotate
     const pinchZone = this.currentCentroidX < 0.5 ? 'zoom' : 'rotate';
 
+    // Double pinch detection
+    const doublePinchData = this.detectDoublePinchHold(isPinching);
+
     this.onGesture({
       rotationX,
       rotationY,
@@ -188,7 +206,95 @@ export class HandController {
       hasHand: this.hasHand,
       isPinching,
       pinchZone,
+      doublePinchHold: doublePinchData.isHolding,
+      doublePinchProgress: doublePinchData.progress,
+      doublePinchTriggered: doublePinchData.triggered,
     });
+  }
+
+  /**
+   * Detect double-pinch hold gesture for Solana mint
+   * Double pinch = two quick pinches, then hold the second one for 2 seconds
+   */
+  detectDoublePinchHold(isPinching) {
+    const state = this.doublePinchState;
+    const now = Date.now();
+
+    // Detect pinch start
+    if (isPinching && !this.wasPinching) {
+      // Pinch just started
+      const timeSinceLastPinch = now - state.lastPinchEnd;
+      
+      if (timeSinceLastPinch < state.doublePinchWindow && state.pinchCount === 1) {
+        // This is the second pinch of a double-pinch
+        state.pinchCount = 2;
+        state.isHolding = true;
+        state.holdStartTime = now;
+        state.triggered = false;
+      } else {
+        // First pinch or too slow - reset
+        state.pinchCount = 1;
+        state.isHolding = false;
+        state.triggered = false;
+      }
+    }
+
+    // Detect pinch end - but allow brief flickers during hold
+    if (!isPinching && this.wasPinching) {
+      // Pinch just ended
+      if (state.pinchCount === 1) {
+        // Record when first pinch ended
+        state.lastPinchEnd = now;
+      } else if (state.pinchCount === 2 && !state.isHolding) {
+        // Only reset if not in a hold (allow flickers during hold)
+        state.pinchCount = 0;
+      }
+    }
+
+    // Update hold progress - allow brief pinch flickers during hold
+    if (state.isHolding && state.pinchCount === 2 && !state.triggered) {
+      const elapsed = now - state.holdStartTime;
+      state.progress = Math.min(1, elapsed / state.holdDuration);
+
+      // Trigger when progress reaches 100%
+      if (state.progress >= 1 && !state.wasTriggered) {
+        state.triggered = true;
+        state.wasTriggered = true;
+        state.isHolding = false;
+        state.pinchCount = 0;
+        
+        console.log('🎯 Double-pinch mint triggered at 100%!');
+        
+        // Trigger the callback
+        this.onDoublePinchHold({
+          centroidX: this.currentCentroidX,
+          centroidY: this.currentCentroidY,
+          handSize: this.currentHandSize
+        });
+        
+        // Reset progress after triggering so UI hides
+        state.progress = 0;
+      }
+    } else if (!state.triggered && !state.isHolding) {
+      // Only reset progress if not triggered and not in a hold
+      state.progress = 0;
+    } else if (state.triggered) {
+      // Already triggered - ensure progress stays at 0 so UI stays hidden
+      state.progress = 0;
+    }
+
+    // Reset wasTriggered when fully released
+    if (!isPinching && state.pinchCount === 0) {
+      state.wasTriggered = false;
+    }
+
+    this.wasPinching = isPinching;
+
+    return {
+      isHolding: state.isHolding && state.pinchCount === 2,
+      progress: state.progress,
+      triggered: state.triggered
+    };
   }
 
   /**
@@ -217,6 +323,11 @@ export class HandController {
   getGesture() {
     const isPinching = this.hasHand && this.currentPinchDistance < this.pinchThreshold;
     const pinchZone = this.currentCentroidX < 0.5 ? 'zoom' : 'rotate';
+    const state = this.doublePinchState;
+    
+    // Only show as holding if not yet triggered
+    const isDoublePinchHold = state.isHolding && state.pinchCount === 2 && !state.triggered;
+    
     return {
       rotationX: (this.currentCentroidY - 0.5) * this.rotationSensitivity,
       rotationY: (0.5 - this.currentCentroidX) * this.rotationSensitivity, // flipped horizontal
@@ -227,6 +338,26 @@ export class HandController {
       hasHand: this.hasHand,
       isPinching,
       pinchZone,
+      doublePinchHold: isDoublePinchHold,
+      doublePinchProgress: state.progress,
+      doublePinchTriggered: state.triggered,
+    };
+  }
+
+  /**
+   * Reset double pinch state (call after mint is processed)
+   */
+  resetDoublePinch() {
+    this.doublePinchState = {
+      lastPinchEnd: 0,
+      pinchCount: 0,
+      isHolding: false,
+      holdStartTime: 0,
+      holdDuration: 2000,
+      doublePinchWindow: 500,
+      triggered: false,
+      wasTriggered: false,
+      progress: 0
     };
   }
 }
