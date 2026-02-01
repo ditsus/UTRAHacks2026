@@ -258,13 +258,14 @@ export class SceneManager {
 
     // Mouse down - start dragging
     canvas.addEventListener('mousedown', (e) => {
+      e.preventDefault();
       this.isDragging = true;
       this.previousMouseX = e.clientX;
       this.previousMouseY = e.clientY;
     });
 
-    // Mouse move - rotate if dragging
-    canvas.addEventListener('mousemove', (e) => {
+    // Mouse move - rotate if dragging (use window to catch moves outside canvas)
+    window.addEventListener('mousemove', (e) => {
       if (!this.isDragging) return;
       
       const deltaX = e.clientX - this.previousMouseX;
@@ -278,13 +279,8 @@ export class SceneManager {
       this.previousMouseY = e.clientY;
     });
 
-    // Mouse up - stop dragging
-    canvas.addEventListener('mouseup', () => {
-      this.isDragging = false;
-    });
-
-    // Mouse leave - stop dragging
-    canvas.addEventListener('mouseleave', () => {
+    // Mouse up - stop dragging (use window to catch releases outside canvas)
+    window.addEventListener('mouseup', () => {
       this.isDragging = false;
     });
 
@@ -404,10 +400,11 @@ export class SceneManager {
     if (!hasHand) return;
 
     // Map hand size to depth (same logic as held items)
+    // Bigger hand (close to camera) = push cursor farther toward model
     const minHandSize = 0.15;
     const maxHandSize = 0.5;
     const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
-    const depth = 1.5 + (1 - normalizedSize) * 4; // Range: 1.5 (close) to 5.5 (far)
+    const depth = 1.5 + normalizedSize * 4; // Range: 1.5 (far from camera) to 5.5 (toward model)
 
     // Update position
     const targetPos = this.handToWorld(centroidX, centroidY, depth);
@@ -567,19 +564,30 @@ export class SceneManager {
 
   /**
    * Try to grab an assembly item at the given hand position
+   * Grabs the closest item within range
    */
   tryGrabItem(centroidX, centroidY) {
     if (!this.assemblyMode || this.heldItem) return null;
 
     const handPos = this.handToWorld(centroidX, centroidY);
+    const grabRadius = 1.0;
+    
+    // Find the closest item within grab range
+    let closestItem = null;
+    let closestDistance = Infinity;
     
     for (const item of this.assemblyItems) {
       const distance = item.position.distanceTo(handPos);
-      if (distance < 1.0) { // Increased grab radius
-        this.heldItem = item;
-        this.heldItem.userData.isHeld = true;
-        return item;
+      if (distance < grabRadius && distance < closestDistance) {
+        closestDistance = distance;
+        closestItem = item;
       }
+    }
+    
+    if (closestItem) {
+      this.heldItem = closestItem;
+      this.heldItem.userData.isHeld = true;
+      return closestItem;
     }
     return null;
   }
@@ -593,14 +601,14 @@ export class SceneManager {
     
     // Map hand size to depth
     // Hand size typically ranges from ~0.2 (far) to ~0.5 (close)
-    // Larger hand (closer to camera) = object closer (smaller depth)
-    // Smaller hand (farther from camera) = object farther (larger depth)
+    // Larger hand (closer to camera) = object farther (toward model)
+    // Smaller hand (farther from camera) = object closer (toward you)
     const minHandSize = 0.15;
     const maxHandSize = 0.5;
     const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
     
-    // Invert: bigger hand = closer = smaller depth value
-    const depth = 1.5 + (1 - normalizedSize) * 4; // Range: 1.5 (close) to 5.5 (far)
+    // Bigger hand (close to camera) = push object farther toward model
+    const depth = 1.5 + normalizedSize * 4; // Range: 1.5 (far from camera) to 5.5 (toward model)
     
     const targetPos = this.handToWorld(centroidX, centroidY, depth);
     // Smooth follow
