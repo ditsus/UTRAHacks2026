@@ -62,6 +62,13 @@ export class SceneManager {
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
     this.moveSpeed = 0.05; // Speed for arrow key movement
+    
+    // Delete tracking (for pinch-to-delete attached parts)
+    this.deleteCandidatePart = null;
+    this.deleteHoldFrames = 0;
+    
+    // Require pinch release before allowing grab (prevents auto-grab on mode entry)
+    this.hasPinchReleased = false;
 
   }
 
@@ -446,6 +453,12 @@ export class SceneManager {
     this.baseRotationY = null;
     this.pinchFrames = 0;
     
+    // Reset assembly state
+    this.heldItem = null;
+    this.deleteCandidatePart = null;
+    this.deleteHoldFrames = 0;
+    this.hasPinchReleased = false; // Must release pinch before grabbing
+    
     this.createAssemblyItems();
     this.createHandCursor();
     return true;
@@ -459,6 +472,8 @@ export class SceneManager {
     this.removeAssemblyItems();
     this.removeHandCursor();
     this.heldItem = null;
+    this.deleteCandidatePart = null;
+    this.deleteHoldFrames = 0;
     this.deselectPart(); // Deselect any selected part
     return false;
   }
@@ -700,7 +715,7 @@ export class SceneManager {
     if (Date.now() - this.assemblyModeEnterTime < this.grabCooldown) return null;
 
     const handPos = this.handToWorld(centroidX, centroidY);
-    const grabRadius = 1.0;
+    const grabRadius = 0.4; // Smaller grab area - must be closer to item
     
     // Find the closest item within grab range
     let closestItem = null;
@@ -921,18 +936,110 @@ export class SceneManager {
     this.updateHandCursor(rawX, rawY, gesture.isPinching, gesture.hasHand, gesture.handSize);
 
     if (gesture.isPinching) {
-      if (!this.heldItem) {
-        // Try to grab an item
-        this.tryGrabItem(rawX, rawY);
-      } else {
-        // Update held item position with depth control via hand size (distance from camera)
-        this.updateHeldItem(rawX, rawY, gesture.handSize);
+      // Only allow grabbing/deleting if pinch was released first
+      if (this.hasPinchReleased) {
+        if (!this.heldItem) {
+          // First try to grab a sidebar item
+          const grabbed = this.tryGrabItem(rawX, rawY);
+          
+          // If didn't grab a sidebar item, try to delete an attached part
+          if (!grabbed) {
+            this.tryDeleteAttachedPart(rawX, rawY, gesture.handSize);
+          }
+        } else {
+          // Update held item position with depth control via hand size (distance from camera)
+          this.updateHeldItem(rawX, rawY, gesture.handSize);
+        }
       }
     } else {
-      // Released pinch
+      // Released pinch - now grabbing is allowed
+      this.hasPinchReleased = true;
+      
       if (this.heldItem) {
         this.releaseItem();
       }
+      // Reset delete tracking when not pinching
+      this.deleteCandidatePart = null;
     }
+  }
+
+  /**
+   * Try to delete an attached part if hand is pinching near it
+   */
+  tryDeleteAttachedPart(centroidX, centroidY, handSize) {
+    if (this.attachedParts.length === 0) return;
+    
+    // Don't allow deleting immediately after entering assembly mode
+    if (Date.now() - this.assemblyModeEnterTime < this.grabCooldown) return;
+
+    // Get hand position in world space
+    const minHandSize = 0.15;
+    const maxHandSize = 0.5;
+    const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
+    const depth = 1.5 + normalizedSize * 4;
+    const handPos = this.handToWorld(centroidX, centroidY, depth);
+    
+    // Find closest attached part
+    let closestPart = null;
+    let closestDistance = Infinity;
+    const deleteRadius = 0.8;
+    
+    for (const part of this.attachedParts) {
+      // Get world position of attached part
+      const partWorldPos = new THREE.Vector3();
+      part.getWorldPosition(partWorldPos);
+      
+      const distance = handPos.distanceTo(partWorldPos);
+      if (distance < deleteRadius && distance < closestDistance) {
+        closestDistance = distance;
+        closestPart = part;
+      }
+    }
+    
+    if (closestPart) {
+      // Track this as delete candidate - require sustained pinch
+      if (this.deleteCandidatePart === closestPart) {
+        this.deleteHoldFrames++;
+        
+        // After holding pinch for ~15 frames, delete the part
+        if (this.deleteHoldFrames > 15) {
+          this.deleteAttachedPart(closestPart);
+          this.deleteCandidatePart = null;
+          this.deleteHoldFrames = 0;
+        }
+      } else {
+        this.deleteCandidatePart = closestPart;
+        this.deleteHoldFrames = 0;
+      }
+    } else {
+      this.deleteCandidatePart = null;
+      this.deleteHoldFrames = 0;
+    }
+  }
+
+  /**
+   * Delete an attached part from the model
+   */
+  deleteAttachedPart(part) {
+    // Remove from attached parts array
+    const idx = this.attachedParts.indexOf(part);
+    if (idx > -1) this.attachedParts.splice(idx, 1);
+    
+    // If this was selected, deselect it
+    if (this.selectedPart === part) {
+      this.selectedPart = null;
+    }
+    
+    // Remove from model group
+    this.modelGroup.remove(part);
+    
+    // Dispose of geometry and materials
+    part.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (Array.isArray(child.material)) child.material.forEach((m) => m.dispose());
+        else child.material.dispose();
+      }
+    });
   }
 }
