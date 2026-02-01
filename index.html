@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hand Gesture 3D Controller | UTRA Hacks 2026</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="canvas-container"></div>
+
+      <div id="ui" class="fixed bottom-4 left-4 flex flex-col gap-2 z-10">
+        <label class="flex items-center gap-2 bg-black/60 text-white px-3 py-2 rounded-lg cursor-pointer text-sm">
+          <input type="checkbox" id="webcam-overlay-toggle" checked />
+          <span>Show webcam overlay</span>
+        </label>
+        <label class="flex items-center gap-2 bg-black/60 text-white px-3 py-2 rounded-lg cursor-pointer text-sm hover:bg-black/70">
+          <input type="file" id="upload-glb" accept=".glb,.gltf" class="sr-only" />
+          <span>Upload GLB</span>
+        </label>
+      </div>
+
+      <div id="webcam-overlay" class="fixed top-4 right-4 w-64 h-48 bg-black rounded-lg overflow-hidden z-50 shadow-lg border border-white/20">
+        <video id="webcam-video" class="hidden" muted playsinline autoplay></video>
+        <canvas id="webcam-canvas" class="w-full h-full block"></canvas>
+      </div>
+
+      <div id="loading" class="fixed inset-0 flex items-center justify-center bg-gray-900 text-white z-20">
+        <div class="text-center">
+          <div class="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent mx-auto mb-4"></div>
+          <p>Loading MediaPipe & Camera...</p>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
