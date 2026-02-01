@@ -160,7 +160,7 @@ export class HandController {
 
     // Emit gesture: map 0-1 centroid to rotation, pinch to zoom
     const rotationX = (this.currentCentroidY - 0.5) * this.rotationSensitivity;
-    const rotationY = (this.currentCentroidX - 0.5) * this.rotationSensitivity;
+    const rotationY = (0.5 - this.currentCentroidX) * this.rotationSensitivity; // flipped horizontal
     const pinchNorm = this.currentPinchDistance;
     const isPinching = this.hasHand && this.currentPinchDistance < this.pinchThreshold;
     // Left half (x < 0.5): pinch → zoom. Right half: pinch → rotate
@@ -205,7 +205,7 @@ export class HandController {
     const pinchZone = this.currentCentroidX < 0.5 ? 'zoom' : 'rotate';
     return {
       rotationX: (this.currentCentroidY - 0.5) * this.rotationSensitivity,
-      rotationY: (this.currentCentroidX - 0.5) * this.rotationSensitivity,
+      rotationY: (0.5 - this.currentCentroidX) * this.rotationSensitivity, // flipped horizontal
       centroidY: this.currentCentroidY,
       pinchDistance: this.currentPinchDistance,
       hasHand: this.hasHand,
