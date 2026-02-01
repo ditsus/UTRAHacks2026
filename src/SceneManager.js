@@ -31,6 +31,11 @@ export class SceneManager {
     this.currentZoom = 1;
     this.baseY = null;
     this.baseZoom = null;
+    this.baseRotationX = null;
+    this.baseRotationY = null;
+    this.startRotationX = 0;
+    this.startRotationY = 0;
+    this.pinchFrames = 0; // frames since pinch started
 
   }
 
@@ -105,23 +110,42 @@ export class SceneManager {
     const t = this.smoothingFactor;
 
     if (gesture.isPinching) {
+      this.pinchFrames++;
       // Left half: pinch → zoom (up/down). Right half: pinch → rotate
       if (gesture.pinchZone === 'rotate') {
-        this.targetRotationX = gesture.rotationX;
-        this.targetRotationY = gesture.rotationY;
+        // Wait a few frames for hand to stabilize before capturing baseline
+        if (this.pinchFrames > 5 && this.baseRotationX === null) {
+          this.baseRotationX = gesture.rotationX;
+          this.baseRotationY = gesture.rotationY;
+          this.startRotationX = this.currentRotationX;
+          this.startRotationY = this.currentRotationY;
+        }
+        if (this.baseRotationX !== null) {
+          // Rotation based on movement from pinch start position
+          const deltaX = gesture.rotationX - this.baseRotationX;
+          const deltaY = gesture.rotationY - this.baseRotationY;
+          this.targetRotationX = this.startRotationX + deltaX;
+          this.targetRotationY = this.startRotationY + deltaY;
+        }
       } else if (gesture.pinchZone === 'zoom') {
-        if (this.baseY === null) {
+        // Wait a few frames for hand to stabilize before capturing baseline
+        if (this.pinchFrames > 5 && this.baseY === null) {
           this.baseY = gesture.centroidY;
           this.baseZoom = this.currentZoom;
         }
-        // Move hand up = zoom in, move hand down = zoom out
-        const yDelta = this.baseY - gesture.centroidY; // negative when moving down
-        const zoomFactor = 1 + yDelta * 3; // scale the effect
-        this.targetZoom = Math.max(0.3, Math.min(3, this.baseZoom * zoomFactor));
+        if (this.baseY !== null) {
+          // Move hand up = zoom in, move hand down = zoom out
+          const yDelta = this.baseY - gesture.centroidY;
+          const zoomFactor = 1 + yDelta * 3;
+          this.targetZoom = Math.max(0.3, Math.min(3, this.baseZoom * zoomFactor));
+        }
       }
     } else {
       this.baseY = null;
       this.baseZoom = null;
+      this.baseRotationX = null;
+      this.baseRotationY = null;
+      this.pinchFrames = 0;
     }
 
     // Lerp rotation and zoom

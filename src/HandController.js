@@ -35,7 +35,7 @@ export class HandController {
     // Normalization: map 0-1 screen coords to rotation range (radians)
     this.rotationSensitivity = options.rotationSensitivity ?? 3;
     // Pinch threshold: distance below this = pinching (actions only when pinching)
-    this.pinchThreshold = options.pinchThreshold ?? 0.12;
+    this.pinchThreshold = options.pinchThreshold ?? 0.18;
   }
 
   /**

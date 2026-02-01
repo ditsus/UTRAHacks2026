@@ -18,7 +18,7 @@ let lastTime = 0;
  * Draw MediaPipe landmarks on overlay canvas for debugging
  * Called every frame; landmarks may be null when no hand detected
  */
-function drawWebcam(ctx, canvas, landmarks) {
+function drawWebcam(ctx, canvas, landmarks, gesture) {
   if (!ctx || !canvas) return;
   const w = canvas.width;
   const h = canvas.height;
@@ -49,6 +49,25 @@ function drawWebcam(ctx, canvas, landmarks) {
   ctx.moveTo(w / 2, 0);
   ctx.lineTo(w / 2, h);
   ctx.stroke();
+
+  // Draw zone labels
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+  ctx.font = '12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('ZOOM', w * 0.25, 15);
+  ctx.fillText('ROTATE', w * 0.75, 15);
+
+  // Show pinch status
+  if (gesture) {
+    const status = gesture.isPinching ? `PINCH: ${gesture.pinchZone.toUpperCase()}` : 'Open hand';
+    ctx.fillStyle = gesture.isPinching ? '#00ff00' : '#ffffff';
+    ctx.font = 'bold 14px sans-serif';
+    ctx.fillText(status, w / 2, h - 10);
+    // Show pinch distance for debugging
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText(`dist: ${gesture.pinchDistance.toFixed(3)}`, w / 2, h - 25);
+  }
 
   // Draw landmarks if present
   if (!landmarks || landmarks.length === 0) return;
@@ -148,7 +167,7 @@ async function init() {
     sceneManager.render();
     // Redraw webcam every frame
     if (!webcamOverlay.classList.contains('hidden')) {
-      drawWebcam(webcamCtx, webcamCanvas, lastLandmarks);
+      drawWebcam(webcamCtx, webcamCanvas, lastLandmarks, gesture);
     }
     requestAnimationFrame(animate);
   }
