@@ -939,12 +939,36 @@ export class SceneManager {
       // Only allow grabbing/deleting if pinch was released first
       if (this.hasPinchReleased) {
         if (!this.heldItem) {
-          // First try to grab a sidebar item
-          const grabbed = this.tryGrabItem(rawX, rawY);
+          // Calculate hand position with depth based on hand size
+          const minHandSize = 0.15;
+          const maxHandSize = 0.5;
+          const normalizedSize = Math.max(0, Math.min(1, (gesture.handSize - minHandSize) / (maxHandSize - minHandSize)));
+          const depth = 1.5 + normalizedSize * 4;
+          const handPos = this.handToWorld(rawX, rawY, depth);
           
-          // If didn't grab a sidebar item, try to delete an attached part
-          if (!grabbed) {
+          // Find closest sidebar item
+          let closestSidebarDist = Infinity;
+          for (const item of this.assemblyItems) {
+            const dist = item.position.distanceTo(handPos);
+            if (dist < closestSidebarDist) closestSidebarDist = dist;
+          }
+          
+          // Find closest attached part
+          let closestAttachedDist = Infinity;
+          for (const part of this.attachedParts) {
+            const partWorldPos = new THREE.Vector3();
+            part.getWorldPosition(partWorldPos);
+            const dist = handPos.distanceTo(partWorldPos);
+            if (dist < closestAttachedDist) closestAttachedDist = dist;
+          }
+          
+          // Prioritize attached parts for deletion - use larger threshold
+          if (this.attachedParts.length > 0 && closestAttachedDist < 2.0) {
+            // Try to delete attached part
             this.tryDeleteAttachedPart(rawX, rawY, gesture.handSize);
+          } else if (closestSidebarDist < 0.6) {
+            // Try to grab sidebar item (smaller radius)
+            this.tryGrabItem(rawX, rawY);
           }
         } else {
           // Update held item position with depth control via hand size (distance from camera)
@@ -982,7 +1006,7 @@ export class SceneManager {
     // Find closest attached part
     let closestPart = null;
     let closestDistance = Infinity;
-    const deleteRadius = 0.8;
+    const deleteRadius = 1.5; // Increased radius for easier deletion
     
     for (const part of this.attachedParts) {
       // Get world position of attached part
@@ -997,23 +1021,8 @@ export class SceneManager {
     }
     
     if (closestPart) {
-      // Track this as delete candidate - require sustained pinch
-      if (this.deleteCandidatePart === closestPart) {
-        this.deleteHoldFrames++;
-        
-        // After holding pinch for ~15 frames, delete the part
-        if (this.deleteHoldFrames > 15) {
-          this.deleteAttachedPart(closestPart);
-          this.deleteCandidatePart = null;
-          this.deleteHoldFrames = 0;
-        }
-      } else {
-        this.deleteCandidatePart = closestPart;
-        this.deleteHoldFrames = 0;
-      }
-    } else {
-      this.deleteCandidatePart = null;
-      this.deleteHoldFrames = 0;
+      // Immediately delete the part on pinch
+      this.deleteAttachedPart(closestPart);
     }
   }
 
