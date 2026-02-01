@@ -131,6 +131,7 @@ export class HandController {
       } else {
         this.hasHand = false;
         this.targetPinchDistance = this.currentPinchDistance; // hold last value
+        this.onLandmarks(null, this.ctx, this.canvas); // still redraw video when no hand
       }
     }
 

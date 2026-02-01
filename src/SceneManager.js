@@ -16,6 +16,7 @@ export class SceneManager {
     this.scene = null;
     this.camera = null;
     this.renderer = null;
+    this.contentGroup = null; // rotates: grid + model
     this.modelGroup = null;
     this.gridHelper = null;
     this.gltfLoader = null;
@@ -67,15 +68,19 @@ export class SceneManager {
     dir.position.set(5, 8, 5);
     this.scene.add(dir);
 
+    // Content group: grid + model rotate together
+    this.contentGroup = new THREE.Group();
+    this.scene.add(this.contentGroup);
+
     // Grid helper
     this.gridHelper = new THREE.GridHelper(10, 20, 0x333355, 0x222244);
     this.gridHelper.position.y = -2;
-    this.scene.add(this.gridHelper);
+    this.contentGroup.add(this.gridHelper);
 
     // Model Group - contains loaded model
     this.modelGroup = new THREE.Group();
     this.modelGroup.position.y = 0;
-    this.scene.add(this.modelGroup);
+    this.contentGroup.add(this.modelGroup);
 
     // GLTFLoader with DRACO support
     this.dracoLoader = new DRACOLoader();
@@ -94,7 +99,7 @@ export class SceneManager {
    * Update from gesture data (call each frame)
    */
   updateFromGesture(gesture, delta = 0.016) {
-    if (!this.modelGroup) return;
+    if (!this.contentGroup) return;
 
     const t = this.smoothingFactor;
 
@@ -117,9 +122,9 @@ export class SceneManager {
     this.currentRotationY = this.lerp(this.currentRotationY, this.targetRotationY, t);
     this.currentZoom = this.lerp(this.currentZoom, this.targetZoom, t);
 
-    this.modelGroup.rotation.x = this.currentRotationX;
-    this.modelGroup.rotation.y = this.currentRotationY;
-    this.modelGroup.scale.setScalar(this.currentZoom);
+    this.contentGroup.rotation.x = this.currentRotationX;
+    this.contentGroup.rotation.y = this.currentRotationY;
+    this.contentGroup.scale.setScalar(this.currentZoom);
 
     // Optional: also move camera for zoom feel
     const targetZ = this.baseCameraZ / this.currentZoom;

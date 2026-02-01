@@ -16,25 +16,30 @@ let lastTime = 0;
 
 /**
  * Draw MediaPipe landmarks on overlay canvas for debugging
+ * Called every frame; landmarks may be null when no hand detected
  */
 function drawLandmarks(landmarks, ctx, canvas) {
   if (!ctx || !canvas) return;
   ctx.save();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(webcamVideo, 0, 0, canvas.width, canvas.height);
-  // Mirror x to match -scale-x-100 video
+  // Flip only the webcam display (video) across y-axis; landmarks use MediaPipe coords
   ctx.scale(-1, 1);
   ctx.translate(-canvas.width, 0);
+  ctx.drawImage(webcamVideo, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  if (!landmarks || landmarks.length === 0) return;
+  ctx.save();
   ctx.strokeStyle = '#00ff00';
   ctx.lineWidth = 2;
   ctx.fillStyle = '#00ff88';
 
   const scaleX = canvas.width;
   const scaleY = canvas.height;
+  // Transform landmark coords to match flipped webcam (x only, across y-axis)
+  const tx = (x, y) => [canvas.width - x * scaleX, y * scaleY];
 
   landmarks.forEach((lm) => {
-    const x = lm.x * scaleX;
-    const y = lm.y * scaleY;
+    const [x, y] = tx(lm.x, lm.y);
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
     ctx.fill();
@@ -54,14 +59,17 @@ function drawLandmarks(landmarks, ctx, canvas) {
     const lmA = landmarks[a];
     const lmB = landmarks[b];
     if (!lmA || !lmB) return;
+    const [x1, y1] = tx(lmA.x, lmA.y);
+    const [x2, y2] = tx(lmB.x, lmB.y);
     ctx.beginPath();
-    ctx.moveTo(lmA.x * scaleX, lmA.y * scaleY);
-    ctx.lineTo(lmB.x * scaleX, lmB.y * scaleY);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
     ctx.stroke();
   });
 
   ctx.restore();
 }
+
 
 async function init() {
   sceneManager = new SceneManager(container, {
