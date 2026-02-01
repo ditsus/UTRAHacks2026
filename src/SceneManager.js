@@ -45,6 +45,8 @@ export class SceneManager {
     this.snapDistance = 1.5; // distance threshold for snapping (increased)
     this.rotationSensitivity = 3; // must match HandController
     this.handCursor = null; // 3D cursor showing hand position
+    this.assemblyModeEnterTime = 0; // timestamp when assembly mode was entered
+    this.grabCooldown = 500; // ms to wait before allowing grab after entering assembly mode
     
     // Fixed screen positions for assembly items (right side)
     this.servoScreenPos = { x: 0.85, y: 0.35 }; // normalized screen coords
@@ -54,6 +56,12 @@ export class SceneManager {
     this.isDragging = false;
     this.previousMouseX = 0;
     this.previousMouseY = 0;
+    
+    // Part selection state (for moving attached parts with keyboard)
+    this.selectedPart = null;
+    this.raycaster = new THREE.Raycaster();
+    this.mouse = new THREE.Vector2();
+    this.moveSpeed = 0.05; // Speed for arrow key movement
 
   }
 
@@ -251,17 +259,21 @@ export class SceneManager {
   // ========== MOUSE CONTROLS ==========
 
   /**
-   * Setup mouse controls for rotating and zooming
+   * Setup mouse controls for rotating, zooming, and part selection
    */
   setupMouseControls() {
     const canvas = this.renderer.domElement;
+    let mouseDownPos = { x: 0, y: 0 };
+    let didDrag = false;
 
-    // Mouse down - start dragging
+    // Mouse down - start potential drag
     canvas.addEventListener('mousedown', (e) => {
       e.preventDefault();
       this.isDragging = true;
+      didDrag = false;
       this.previousMouseX = e.clientX;
       this.previousMouseY = e.clientY;
+      mouseDownPos = { x: e.clientX, y: e.clientY };
     });
 
     // Mouse move - rotate if dragging (use window to catch moves outside canvas)
@@ -271,6 +283,10 @@ export class SceneManager {
       const deltaX = e.clientX - this.previousMouseX;
       const deltaY = e.clientY - this.previousMouseY;
       
+      // Check if we've moved enough to count as a drag
+      const totalMove = Math.abs(e.clientX - mouseDownPos.x) + Math.abs(e.clientY - mouseDownPos.y);
+      if (totalMove > 5) didDrag = true;
+      
       // Update rotation targets
       this.targetRotationY += deltaX * 0.01;
       this.targetRotationX += deltaY * 0.01;
@@ -279,8 +295,12 @@ export class SceneManager {
       this.previousMouseY = e.clientY;
     });
 
-    // Mouse up - stop dragging (use window to catch releases outside canvas)
-    window.addEventListener('mouseup', () => {
+    // Mouse up - stop dragging, check for click
+    window.addEventListener('mouseup', (e) => {
+      if (this.isDragging && !didDrag && this.assemblyMode) {
+        // This was a click, not a drag - try to select a part
+        this.trySelectPart(mouseDownPos.x, mouseDownPos.y);
+      }
       this.isDragging = false;
     });
 
@@ -291,6 +311,118 @@ export class SceneManager {
       const zoomDelta = e.deltaY * 0.001;
       this.targetZoom = Math.max(0.3, Math.min(3, this.targetZoom - zoomDelta));
     }, { passive: false });
+
+    // Keyboard controls for moving selected part
+    window.addEventListener('keydown', (e) => {
+      if (!this.assemblyMode || !this.selectedPart) return;
+      
+      const speed = this.moveSpeed;
+      
+      switch (e.key) {
+        case 'ArrowUp':
+          e.preventDefault();
+          this.selectedPart.position.y += speed;
+          break;
+        case 'ArrowDown':
+          e.preventDefault();
+          this.selectedPart.position.y -= speed;
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          this.selectedPart.position.x -= speed;
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          this.selectedPart.position.x += speed;
+          break;
+        case 'w':
+        case 'W':
+          e.preventDefault();
+          this.selectedPart.position.z -= speed; // Forward (into screen)
+          break;
+        case 's':
+        case 'S':
+          e.preventDefault();
+          this.selectedPart.position.z += speed; // Backward (out of screen)
+          break;
+        case 'Escape':
+          this.deselectPart();
+          break;
+      }
+    });
+  }
+
+  /**
+   * Try to select an attached part at the given screen position
+   */
+  trySelectPart(screenX, screenY) {
+    // Convert screen coordinates to normalized device coordinates
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.mouse.x = ((screenX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((screenY - rect.top) / rect.height) * 2 + 1;
+
+    // Raycast to find clicked objects
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    
+    // Check attached parts
+    const intersects = this.raycaster.intersectObjects(this.attachedParts, true);
+    
+    if (intersects.length > 0) {
+      // Find the parent group (the actual part)
+      let part = intersects[0].object;
+      while (part.parent && !this.attachedParts.includes(part)) {
+        part = part.parent;
+      }
+      
+      if (this.attachedParts.includes(part)) {
+        this.selectPart(part);
+        return;
+      }
+    }
+    
+    // Clicked on nothing - deselect
+    this.deselectPart();
+  }
+
+  /**
+   * Select a part for keyboard movement
+   */
+  selectPart(part) {
+    // Deselect previous
+    this.deselectPart();
+    
+    this.selectedPart = part;
+    
+    // Add selection highlight (yellow emissive)
+    part.traverse((child) => {
+      if (child.material) {
+        child.userData.originalEmissive = child.material.emissive?.clone();
+        if (child.material.emissive) {
+          child.material.emissive.setHex(0xffff00);
+          child.material.emissiveIntensity = 0.3;
+        }
+      }
+    });
+  }
+
+  /**
+   * Deselect the currently selected part
+   */
+  deselectPart() {
+    if (!this.selectedPart) return;
+    
+    // Restore original appearance
+    this.selectedPart.traverse((child) => {
+      if (child.material && child.userData.originalEmissive) {
+        child.material.emissive.copy(child.userData.originalEmissive);
+        child.material.emissiveIntensity = 0;
+      } else if (child.material && child.material.emissive) {
+        child.material.emissive.setHex(0x000000);
+        child.material.emissiveIntensity = 0;
+      }
+    });
+    
+    this.selectedPart = null;
   }
 
   // ========== ASSEMBLY MODE ==========
@@ -300,6 +432,20 @@ export class SceneManager {
    */
   enterAssemblyMode() {
     this.assemblyMode = true;
+    this.assemblyModeEnterTime = Date.now(); // Track when we entered for grab cooldown
+    
+    // Freeze current rotation/zoom values to prevent drift
+    this.targetRotationX = this.currentRotationX;
+    this.targetRotationY = this.currentRotationY;
+    this.targetZoom = this.currentZoom;
+    
+    // Reset gesture tracking state
+    this.baseY = null;
+    this.baseZoom = null;
+    this.baseRotationX = null;
+    this.baseRotationY = null;
+    this.pinchFrames = 0;
+    
     this.createAssemblyItems();
     this.createHandCursor();
     return true;
@@ -313,6 +459,7 @@ export class SceneManager {
     this.removeAssemblyItems();
     this.removeHandCursor();
     this.heldItem = null;
+    this.deselectPart(); // Deselect any selected part
     return false;
   }
 
@@ -327,7 +474,7 @@ export class SceneManager {
     // Outer ring
     const ringGeom = new THREE.RingGeometry(0.12, 0.15, 32);
     const ringMat = new THREE.MeshBasicMaterial({ 
-      color: 0x00ffff, 
+      color: 0xff9900, // Orange for open hand
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.8
@@ -338,7 +485,7 @@ export class SceneManager {
     // Center dot
     const dotGeom = new THREE.CircleGeometry(0.04, 16);
     const dotMat = new THREE.MeshBasicMaterial({ 
-      color: 0x00ffff,
+      color: 0xff9900,
       transparent: true,
       opacity: 0.9
     });
@@ -346,9 +493,6 @@ export class SceneManager {
     this.handCursor.add(dot);
 
     // Crosshair lines
-    const lineMatPinch = new THREE.LineBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.6 });
-    const lineMatOpen = new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6 });
-    
     const lineLen = 0.25;
     const positions = [
       [-lineLen, 0, 0, -0.18, 0, 0], // left
@@ -361,15 +505,14 @@ export class SceneManager {
     positions.forEach((coords) => {
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(coords, 3));
-      const line = new THREE.Line(geom, lineMatOpen.clone());
+      const lineMat = new THREE.LineBasicMaterial({ color: 0xff9900, transparent: true, opacity: 0.6 });
+      const line = new THREE.Line(geom, lineMat);
       this.handCursor.add(line);
       this.handCursor.userData.lines.push(line);
     });
 
     this.handCursor.userData.ringMat = ringMat;
     this.handCursor.userData.dotMat = dotMat;
-    this.handCursor.userData.lineMatPinch = lineMatPinch;
-    this.handCursor.userData.lineMatOpen = lineMatOpen;
 
     this.handCursor.position.set(0, 0, 2);
     this.scene.add(this.handCursor);
@@ -410,8 +553,8 @@ export class SceneManager {
     const targetPos = this.handToWorld(centroidX, centroidY, depth);
     this.handCursor.position.lerp(targetPos, 0.3);
 
-    // Change color based on pinch state
-    const color = isPinching ? 0x00ff00 : 0x00ffff;
+    // Change color based on pinch state: orange = open, magenta = pinching
+    const color = isPinching ? 0xff00ff : 0xff9900;
     const scale = isPinching ? 0.8 : 1.0;
     
     this.handCursor.userData.ringMat.color.setHex(color);
@@ -460,14 +603,6 @@ export class SceneManager {
     servoHub.position.set(0, 0.13, 0);
     servoGroup.add(servoHub);
     
-    // Add a glowing outline ring to make it easier to see
-    const servoRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.22, 0.02, 8, 32),
-      new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6 })
-    );
-    servoRing.rotation.x = Math.PI / 2;
-    servoGroup.add(servoRing);
-    
     // Position will be updated by updateAssemblyItemPositions
     this.scene.add(servoGroup);
     this.assemblyItems.push(servoGroup);
@@ -489,14 +624,6 @@ export class SceneManager {
     );
     wheelHub.rotation.x = Math.PI / 2;
     wheelGroup.add(wheelHub);
-    
-    // Add a glowing outline ring
-    const wheelRing = new THREE.Mesh(
-      new THREE.TorusGeometry(0.25, 0.02, 8, 32),
-      new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6 })
-    );
-    wheelRing.rotation.x = Math.PI / 2;
-    wheelGroup.add(wheelRing);
     
     // Position will be updated by updateAssemblyItemPositions
     this.scene.add(wheelGroup);
@@ -568,6 +695,9 @@ export class SceneManager {
    */
   tryGrabItem(centroidX, centroidY) {
     if (!this.assemblyMode || this.heldItem) return null;
+    
+    // Don't allow grabbing immediately after entering assembly mode
+    if (Date.now() - this.assemblyModeEnterTime < this.grabCooldown) return null;
 
     const handPos = this.handToWorld(centroidX, centroidY);
     const grabRadius = 1.0;
@@ -613,22 +743,6 @@ export class SceneManager {
     const targetPos = this.handToWorld(centroidX, centroidY, depth);
     // Smooth follow
     this.heldItem.position.lerp(targetPos, 0.3);
-    
-    // Visual feedback - change ring color when in snap range
-    const closestPoint = this.getClosestPointOnModel(this.heldItem.position);
-    const distance = this.heldItem.position.distanceTo(closestPoint);
-    const inSnapRange = distance < 3.0;
-    
-    // Update ring color to indicate snap range
-    this.heldItem.traverse((child) => {
-      if (child.material && child.material.color) {
-        const isRing = child.geometry && child.geometry.type === 'TorusGeometry';
-        if (isRing) {
-          child.material.color.setHex(inSnapRange ? 0x00ff00 : 0x00ffff);
-          child.material.opacity = inSnapRange ? 1.0 : 0.6;
-        }
-      }
-    });
   }
 
   /**
@@ -704,16 +818,6 @@ export class SceneManager {
     // Remove from scene
     this.scene.remove(item);
     
-    // Remove the cyan ring when attached
-    item.traverse((child) => {
-      if (child.material && child.material.color) {
-        const color = child.material.color.getHex();
-        if (color === 0x00ffff) {
-          child.visible = false; // Hide the ring
-        }
-      }
-    });
-    
     // Determine final position
     let finalWorldPos;
     if (snapPoint) {
@@ -772,13 +876,6 @@ export class SceneManager {
       servoHub.position.set(0, 0.13, 0);
       servoGroup.add(servoHub);
       
-      const servoRing = new THREE.Mesh(
-        new THREE.TorusGeometry(0.22, 0.02, 8, 32),
-        new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6 })
-      );
-      servoRing.rotation.x = Math.PI / 2;
-      servoGroup.add(servoRing);
-      
       this.scene.add(servoGroup);
       this.assemblyItems.push(servoGroup);
     } else if (type === 'wheel') {
@@ -798,13 +895,6 @@ export class SceneManager {
       );
       wheelHub.rotation.x = Math.PI / 2;
       wheelGroup.add(wheelHub);
-      
-      const wheelRing = new THREE.Mesh(
-        new THREE.TorusGeometry(0.25, 0.02, 8, 32),
-        new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.6 })
-      );
-      wheelRing.rotation.x = Math.PI / 2;
-      wheelGroup.add(wheelRing);
       
       this.scene.add(wheelGroup);
       this.assemblyItems.push(wheelGroup);
