@@ -12,7 +12,6 @@ const loadingEl = document.getElementById('loading');
 
 // Assembly Mode UI elements
 const assemblyModeBtn = document.getElementById('assembly-mode-btn');
-const assemblySidebar = document.getElementById('assembly-sidebar');
 const assemblyIndicator = document.getElementById('assembly-indicator');
 
 let sceneManager;
@@ -231,15 +230,11 @@ assemblyModeBtn.addEventListener('click', () => {
     assemblyModeBtn.textContent = 'Exit Assembly Mode';
     assemblyModeBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
     assemblyModeBtn.classList.add('bg-red-600', 'hover:bg-red-700');
-    assemblySidebar.classList.remove('hidden');
-    assemblySidebar.classList.add('flex');
     assemblyIndicator.classList.remove('hidden');
   } else {
     assemblyModeBtn.textContent = 'Enter Assembly Mode';
     assemblyModeBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
     assemblyModeBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
-    assemblySidebar.classList.add('hidden');
-    assemblySidebar.classList.remove('flex');
     assemblyIndicator.classList.add('hidden');
   }
 });

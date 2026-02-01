@@ -42,9 +42,18 @@ export class SceneManager {
     this.assemblyItems = []; // sidebar 3D items (Servo, Wheel)
     this.heldItem = null; // currently grabbed item
     this.attachedParts = []; // parts attached to the model
-    this.snapDistance = 0.5; // distance threshold for snapping
+    this.snapDistance = 1.5; // distance threshold for snapping (increased)
     this.rotationSensitivity = 3; // must match HandController
     this.handCursor = null; // 3D cursor showing hand position
+    
+    // Fixed screen positions for assembly items (right side)
+    this.servoScreenPos = { x: 0.85, y: 0.35 }; // normalized screen coords
+    this.wheelScreenPos = { x: 0.85, y: 0.65 };
+    
+    // Mouse control state
+    this.isDragging = false;
+    this.previousMouseX = 0;
+    this.previousMouseY = 0;
 
   }
 
@@ -107,6 +116,10 @@ export class SceneManager {
     this.loadGLB('/robotic-car.glb');
 
     window.addEventListener('resize', () => this.onResize());
+    
+    // Mouse controls
+    this.setupMouseControls();
+    
     return this;
   }
 
@@ -233,6 +246,57 @@ export class SceneManager {
 
   render() {
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // ========== MOUSE CONTROLS ==========
+
+  /**
+   * Setup mouse controls for rotating and zooming
+   */
+  setupMouseControls() {
+    const canvas = this.renderer.domElement;
+
+    // Mouse down - start dragging
+    canvas.addEventListener('mousedown', (e) => {
+      if (this.assemblyMode) return; // Disable in assembly mode
+      this.isDragging = true;
+      this.previousMouseX = e.clientX;
+      this.previousMouseY = e.clientY;
+    });
+
+    // Mouse move - rotate if dragging
+    canvas.addEventListener('mousemove', (e) => {
+      if (!this.isDragging || this.assemblyMode) return;
+      
+      const deltaX = e.clientX - this.previousMouseX;
+      const deltaY = e.clientY - this.previousMouseY;
+      
+      // Update rotation targets
+      this.targetRotationY += deltaX * 0.01;
+      this.targetRotationX += deltaY * 0.01;
+      
+      this.previousMouseX = e.clientX;
+      this.previousMouseY = e.clientY;
+    });
+
+    // Mouse up - stop dragging
+    canvas.addEventListener('mouseup', () => {
+      this.isDragging = false;
+    });
+
+    // Mouse leave - stop dragging
+    canvas.addEventListener('mouseleave', () => {
+      this.isDragging = false;
+    });
+
+    // Scroll - zoom
+    canvas.addEventListener('wheel', (e) => {
+      if (this.assemblyMode) return; // Disable in assembly mode
+      e.preventDefault();
+      
+      const zoomDelta = e.deltaY * 0.001;
+      this.targetZoom = Math.max(0.3, Math.min(3, this.targetZoom - zoomDelta));
+    }, { passive: false });
   }
 
   // ========== ASSEMBLY MODE ==========
@@ -379,7 +443,7 @@ export class SceneManager {
 
     // Create Servo (small)
     const servoGroup = new THREE.Group();
-    servoGroup.userData = { type: 'servo', isAssemblyItem: true };
+    servoGroup.userData = { type: 'servo', isAssemblyItem: true, screenPos: this.servoScreenPos };
     
     const servoBody = new THREE.Mesh(
       new THREE.BoxGeometry(0.25, 0.18, 0.2),
@@ -402,13 +466,13 @@ export class SceneManager {
     servoRing.rotation.x = Math.PI / 2;
     servoGroup.add(servoRing);
     
-    servoGroup.position.set(-2.5, 0.5, 1);
+    // Position will be updated by updateAssemblyItemPositions
     this.scene.add(servoGroup);
     this.assemblyItems.push(servoGroup);
 
     // Create Wheel (small)
     const wheelGroup = new THREE.Group();
-    wheelGroup.userData = { type: 'wheel', isAssemblyItem: true };
+    wheelGroup.userData = { type: 'wheel', isAssemblyItem: true, screenPos: this.wheelScreenPos };
     
     const wheelTire = new THREE.Mesh(
       new THREE.CylinderGeometry(0.2, 0.2, 0.1, 24),
@@ -432,9 +496,40 @@ export class SceneManager {
     wheelRing.rotation.x = Math.PI / 2;
     wheelGroup.add(wheelRing);
     
-    wheelGroup.position.set(-2.5, -0.5, 1);
+    // Position will be updated by updateAssemblyItemPositions
     this.scene.add(wheelGroup);
     this.assemblyItems.push(wheelGroup);
+    
+    // Initialize positions
+    this.updateAssemblyItemPositions();
+  }
+
+  /**
+   * Convert screen coordinates (0-1) to world position at a fixed distance from camera
+   */
+  screenToWorld(screenX, screenY, distance = 3) {
+    const vector = new THREE.Vector3(
+      (screenX * 2) - 1,  // Convert 0-1 to -1 to 1
+      -(screenY * 2) + 1, // Convert 0-1 to 1 to -1 (flip Y)
+      0.5
+    );
+    vector.unproject(this.camera);
+    const dir = vector.sub(this.camera.position).normalize();
+    return this.camera.position.clone().add(dir.multiplyScalar(distance));
+  }
+
+  /**
+   * Update assembly items to stick to fixed screen positions
+   */
+  updateAssemblyItemPositions() {
+    for (const item of this.assemblyItems) {
+      if (item.userData.isHeld) continue; // Don't update if being held
+      const screenPos = item.userData.screenPos;
+      if (screenPos) {
+        const worldPos = this.screenToWorld(screenPos.x, screenPos.y, 3);
+        item.position.copy(worldPos);
+      }
+    }
   }
 
   /**
@@ -459,13 +554,9 @@ export class SceneManager {
    * Note: X is flipped to match the mirrored webcam display
    */
   handToWorld(centroidX, centroidY) {
-    // Map hand position to 3D space
-    // X: flipped to match mirrored webcam (hand right = cursor right)
-    // Y: 0 (top) to 1 (bottom) -> 2 to -2 in world
-    const x = (0.5 - centroidX) * 6; // Flipped for mirrored webcam
-    const y = (0.5 - centroidY) * 4;
-    const z = 1; // Keep items in front of model
-    return new THREE.Vector3(x, y, z);
+    // Flip X to match mirrored webcam (hand right = cursor right)
+    const flippedX = 1 - centroidX;
+    return this.screenToWorld(flippedX, centroidY, 3);
   }
 
   /**
@@ -478,7 +569,7 @@ export class SceneManager {
     
     for (const item of this.assemblyItems) {
       const distance = item.position.distanceTo(handPos);
-      if (distance < 0.8) {
+      if (distance < 1.0) { // Increased grab radius
         this.heldItem = item;
         this.heldItem.userData.isHeld = true;
         return item;
@@ -554,15 +645,16 @@ export class SceneManager {
   }
 
   /**
-   * Return item to sidebar position
+   * Return item to sidebar position (will be updated by updateAssemblyItemPositions)
    */
   returnToSidebar(item) {
     const type = item.userData.type;
     if (type === 'servo') {
-      item.position.set(-2.5, 0.5, 1);
+      item.userData.screenPos = this.servoScreenPos;
     } else if (type === 'wheel') {
-      item.position.set(-2.5, -0.5, 1);
+      item.userData.screenPos = this.wheelScreenPos;
     }
+    item.userData.isHeld = false;
   }
 
   /**
@@ -571,7 +663,7 @@ export class SceneManager {
   respawnSidebarItem(type) {
     if (type === 'servo') {
       const servoGroup = new THREE.Group();
-      servoGroup.userData = { type: 'servo', isAssemblyItem: true };
+      servoGroup.userData = { type: 'servo', isAssemblyItem: true, screenPos: this.servoScreenPos };
       
       const servoBody = new THREE.Mesh(
         new THREE.BoxGeometry(0.25, 0.18, 0.2),
@@ -593,12 +685,11 @@ export class SceneManager {
       servoRing.rotation.x = Math.PI / 2;
       servoGroup.add(servoRing);
       
-      servoGroup.position.set(-2.5, 0.5, 1);
       this.scene.add(servoGroup);
       this.assemblyItems.push(servoGroup);
     } else if (type === 'wheel') {
       const wheelGroup = new THREE.Group();
-      wheelGroup.userData = { type: 'wheel', isAssemblyItem: true };
+      wheelGroup.userData = { type: 'wheel', isAssemblyItem: true, screenPos: this.wheelScreenPos };
       
       const wheelTire = new THREE.Mesh(
         new THREE.CylinderGeometry(0.2, 0.2, 0.1, 24),
@@ -621,7 +712,6 @@ export class SceneManager {
       wheelRing.rotation.x = Math.PI / 2;
       wheelGroup.add(wheelRing);
       
-      wheelGroup.position.set(-2.5, -0.5, 1);
       this.scene.add(wheelGroup);
       this.assemblyItems.push(wheelGroup);
     }
@@ -632,6 +722,9 @@ export class SceneManager {
    */
   updateAssemblyMode(gesture) {
     if (!this.assemblyMode) return;
+
+    // Keep assembly items stuck to screen positions
+    this.updateAssemblyItemPositions();
 
     const centroidX = (gesture.rotationY / this.rotationSensitivity) + 0.5; // Convert back to 0-1
     const centroidY = (gesture.rotationX / this.rotationSensitivity) + 0.5;
