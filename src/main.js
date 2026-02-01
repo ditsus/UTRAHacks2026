@@ -18,25 +18,48 @@ let lastTime = 0;
  * Draw MediaPipe landmarks on overlay canvas for debugging
  * Called every frame; landmarks may be null when no hand detected
  */
-function drawLandmarks(landmarks, ctx, canvas) {
+function drawWebcam(ctx, canvas, landmarks) {
   if (!ctx || !canvas) return;
-  ctx.save();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // Flip only the webcam display (video) across y-axis; landmarks use MediaPipe coords
-  ctx.scale(-1, 1);
-  ctx.translate(-canvas.width, 0);
-  ctx.drawImage(webcamVideo, 0, 0, canvas.width, canvas.height);
-  ctx.restore();
+  const w = canvas.width;
+  const h = canvas.height;
+  if (w === 0 || h === 0) return;
+
+  // Clear and draw video frame (mirrored)
+  ctx.clearRect(0, 0, w, h);
+  if (webcamVideo.readyState >= 2) {
+    ctx.save();
+    ctx.scale(-1, 1);
+    ctx.translate(-w, 0);
+    ctx.drawImage(webcamVideo, 0, 0, w, h);
+    ctx.restore();
+  } else {
+    // Show placeholder if video not ready
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#888';
+    ctx.font = '14px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Waiting for camera...', w / 2, h / 2);
+  }
+
+  // Draw zone divider line
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(w / 2, 0);
+  ctx.lineTo(w / 2, h);
+  ctx.stroke();
+
+  // Draw landmarks if present
   if (!landmarks || landmarks.length === 0) return;
-  ctx.save();
   ctx.strokeStyle = '#00ff00';
   ctx.lineWidth = 2;
   ctx.fillStyle = '#00ff88';
 
-  const scaleX = canvas.width;
-  const scaleY = canvas.height;
-  // Transform landmark coords to match flipped webcam (x only, across y-axis)
-  const tx = (x, y) => [canvas.width - x * scaleX, y * scaleY];
+  const scaleX = w;
+  const scaleY = h;
+  // Mirror x to match flipped video
+  const tx = (x, y) => [w - x * scaleX, y * scaleY];
 
   landmarks.forEach((lm) => {
     const [x, y] = tx(lm.x, lm.y);
@@ -46,7 +69,7 @@ function drawLandmarks(landmarks, ctx, canvas) {
     ctx.stroke();
   });
 
-  // Draw connections (simplified hand skeleton)
+  // Draw hand skeleton connections
   const connections = [
     [0, 1], [1, 2], [2, 3], [3, 4],
     [0, 5], [5, 6], [6, 7], [7, 8],
@@ -66,8 +89,6 @@ function drawLandmarks(landmarks, ctx, canvas) {
     ctx.lineTo(x2, y2);
     ctx.stroke();
   });
-
-  ctx.restore();
 }
 
 
@@ -82,24 +103,53 @@ async function init() {
   handController = new HandController({
     smoothingFactor: 0.15,
     rotationSensitivity: 3,
-    onLandmarks: (landmarks, ctx, canvas) => {
-      if (webcamOverlay.classList.contains('hidden')) return;
-      drawLandmarks(landmarks, ctx, canvas);
-    },
   });
 
+  console.log('Initializing hand controller...');
   await handController.init(webcamVideo, webcamCanvas);
+  console.log('Hand controller initialized, starting...');
   handController.start();
+  console.log('Hand controller started, hiding loading screen');
 
   loadingEl.classList.add('hidden');
 
-  // Wire gesture -> scene
+  // Resize canvas to match overlay dimensions
+  function resizeWebcamCanvas() {
+    const w = webcamOverlay.clientWidth;
+    const h = webcamOverlay.clientHeight;
+    if (w > 0 && h > 0 && (webcamCanvas.width !== w || webcamCanvas.height !== h)) {
+      webcamCanvas.width = w;
+      webcamCanvas.height = h;
+      console.log('Canvas resized to', w, h);
+    }
+  }
+  // Set initial size
+  webcamCanvas.width = 256;
+  webcamCanvas.height = 192;
+  resizeWebcamCanvas();
+  setTimeout(resizeWebcamCanvas, 100);
+  setTimeout(resizeWebcamCanvas, 500);
+  new ResizeObserver(resizeWebcamCanvas).observe(webcamOverlay);
+
+  // Store last landmarks for continuous redraw
+  let lastLandmarks = null;
+  handController.onLandmarks = (landmarks) => {
+    lastLandmarks = landmarks;
+  };
+
+  // Get canvas context once
+  const webcamCtx = webcamCanvas.getContext('2d');
+
   function animate(time) {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
     const gesture = handController.getGesture();
     sceneManager.updateFromGesture(gesture, delta);
     sceneManager.render();
+    // Redraw webcam every frame
+    if (!webcamOverlay.classList.contains('hidden')) {
+      drawWebcam(webcamCtx, webcamCanvas, lastLandmarks);
+    }
     requestAnimationFrame(animate);
   }
   requestAnimationFrame(animate);
@@ -125,5 +175,5 @@ uploadInput.addEventListener('change', (e) => {
 
 init().catch((err) => {
   console.error('Init failed:', err);
-  loadingEl.innerHTML = `<p class="text-red-500">Error: ${err.message}</p>`;
+  loadingEl.innerHTML = `<p class="text-red-500 p-4">Error: ${err.message}<br><br>Please allow camera access and reload the page.</p>`;
 });

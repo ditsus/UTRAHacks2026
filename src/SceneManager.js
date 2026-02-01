@@ -29,7 +29,8 @@ export class SceneManager {
     this.currentRotationX = 0;
     this.currentRotationY = 0;
     this.currentZoom = 1;
-    this.basePinchDistance = null;
+    this.baseY = null;
+    this.baseZoom = null;
 
   }
 
@@ -88,8 +89,8 @@ export class SceneManager {
     this.gltfLoader = new GLTFLoader();
     this.gltfLoader.setDRACOLoader(this.dracoLoader);
 
-    // Load default robotic car GLB (encode + as %2B)
-    this.loadGLB('/robotic%2Bcar%2B3d%2Bmodel.glb');
+    // Load default robotic car GLB
+    this.loadGLB('/robotic-car.glb');
 
     window.addEventListener('resize', () => this.onResize());
     return this;
@@ -103,18 +104,24 @@ export class SceneManager {
 
     const t = this.smoothingFactor;
 
-    if (gesture.hasHand) {
-      this.targetRotationX = gesture.rotationX;
-      this.targetRotationY = gesture.rotationY;
-
-      // Pinch to zoom: normalize by first pinch value, then scale
-      if (this.basePinchDistance === null) {
-        this.basePinchDistance = gesture.pinchDistance || 0.1;
+    if (gesture.isPinching) {
+      // Left half: pinch → zoom (up/down). Right half: pinch → rotate
+      if (gesture.pinchZone === 'rotate') {
+        this.targetRotationX = gesture.rotationX;
+        this.targetRotationY = gesture.rotationY;
+      } else if (gesture.pinchZone === 'zoom') {
+        if (this.baseY === null) {
+          this.baseY = gesture.centroidY;
+          this.baseZoom = this.currentZoom;
+        }
+        // Move hand up = zoom in, move hand down = zoom out
+        const yDelta = this.baseY - gesture.centroidY; // negative when moving down
+        const zoomFactor = 1 + yDelta * 3; // scale the effect
+        this.targetZoom = Math.max(0.3, Math.min(3, this.baseZoom * zoomFactor));
       }
-      const pinchNorm = gesture.pinchDistance / this.basePinchDistance;
-      this.targetZoom = Math.max(0.3, Math.min(3, pinchNorm * this.zoomSensitivity));
     } else {
-      this.basePinchDistance = null;
+      this.baseY = null;
+      this.baseZoom = null;
     }
 
     // Lerp rotation and zoom
@@ -173,7 +180,7 @@ export class SceneManager {
         model.position.sub(center);
         model.scale.setScalar(scale);
         this.modelGroup.add(model);
-        this.basePinchDistance = null;
+        this.baseY = null;
       },
       undefined,
       (err) => {

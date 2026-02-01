@@ -18,10 +18,17 @@ html, body, #app {
 #canvas-container {
   width: 100%;
   height: 100%;
+  position: relative;
+  z-index: 0;
 }
 
 #canvas-container canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* Ensure webcam overlay stays on top of WebGL canvas */
+#webcam-overlay {
+  isolation: isolate;
 }

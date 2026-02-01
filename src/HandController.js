@@ -34,6 +34,8 @@ export class HandController {
 
     // Normalization: map 0-1 screen coords to rotation range (radians)
     this.rotationSensitivity = options.rotationSensitivity ?? 3;
+    // Pinch threshold: distance below this = pinching (actions only when pinching)
+    this.pinchThreshold = options.pinchThreshold ?? 0.12;
   }
 
   /**
@@ -57,7 +59,7 @@ export class HandController {
     this.video = videoElement;
     this.canvas = canvasElement;
     if (this.canvas) {
-      this.ctx = this.canvas.getContext('2d');
+      this.ctx = this.canvas.getContext('2d', { alpha: true });
     }
 
     const vision = await FilesetResolver.forVisionTasks(
@@ -75,25 +77,40 @@ export class HandController {
     });
 
     this.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-
-    // Attach listener BEFORE setting srcObject so we don't miss the event
-    const videoReady = new Promise((resolve, reject) => {
-      const done = () => {
-        this.video.width = this.video.videoWidth;
-        this.video.height = this.video.videoHeight;
-        if (this.canvas) {
-          this.canvas.width = this.video.videoWidth;
-          this.canvas.height = this.video.videoHeight;
-        }
-        resolve();
-      };
-      this.video.onloadedmetadata = done;
-      this.video.onerror = () => reject(new Error('Video failed to load'));
-    });
-
     this.video.srcObject = this.stream;
-    await this.video.play();
-    await videoReady;
+
+    // Wait for video to be ready (with timeout)
+    await Promise.race([
+      new Promise((resolve) => {
+        const done = () => {
+          const w = this.video.videoWidth || 640;
+          const h = this.video.videoHeight || 480;
+          this.video.width = w;
+          this.video.height = h;
+          if (this.canvas) {
+            const parent = this.canvas.parentElement;
+            const pw = parent?.clientWidth || 256;
+            const ph = parent?.clientHeight || 144;
+            this.canvas.width = pw > 0 ? pw : w;
+            this.canvas.height = ph > 0 ? ph : h;
+          }
+          resolve();
+        };
+        if (this.video.readyState >= 1) {
+          done();
+        } else {
+          this.video.onloadedmetadata = done;
+          this.video.oncanplay = done;
+        }
+      }),
+      new Promise((resolve) => setTimeout(resolve, 3000)), // 3s timeout
+    ]);
+
+    try {
+      await this.video.play();
+    } catch (e) {
+      console.warn('Video play failed:', e);
+    }
 
     return this;
   }
@@ -145,12 +162,18 @@ export class HandController {
     const rotationX = (this.currentCentroidY - 0.5) * this.rotationSensitivity;
     const rotationY = (this.currentCentroidX - 0.5) * this.rotationSensitivity;
     const pinchNorm = this.currentPinchDistance;
+    const isPinching = this.hasHand && this.currentPinchDistance < this.pinchThreshold;
+    // Left half (x < 0.5): pinch → zoom. Right half: pinch → rotate
+    const pinchZone = this.currentCentroidX < 0.5 ? 'zoom' : 'rotate';
 
     this.onGesture({
       rotationX,
       rotationY,
+      centroidY: this.currentCentroidY,
       pinchDistance: pinchNorm,
       hasHand: this.hasHand,
+      isPinching,
+      pinchZone,
     });
   }
 
@@ -178,11 +201,16 @@ export class HandController {
    * Get current smoothed values (for SceneManager)
    */
   getGesture() {
+    const isPinching = this.hasHand && this.currentPinchDistance < this.pinchThreshold;
+    const pinchZone = this.currentCentroidX < 0.5 ? 'zoom' : 'rotate';
     return {
       rotationX: (this.currentCentroidY - 0.5) * this.rotationSensitivity,
       rotationY: (this.currentCentroidX - 0.5) * this.rotationSensitivity,
+      centroidY: this.currentCentroidY,
       pinchDistance: this.currentPinchDistance,
       hasHand: this.hasHand,
+      isPinching,
+      pinchZone,
     };
   }
 }
