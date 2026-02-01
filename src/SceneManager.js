@@ -63,8 +63,8 @@ export class SceneManager {
 
   init() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1a2e);
-    this.scene.fog = new THREE.Fog(0x1a1a2e, 5, 20);
+    this.scene.background = new THREE.Color(0xd0d0d0); // Light gray
+    this.scene.fog = new THREE.Fog(0xd0d0d0, 5, 20);
 
     const aspect = this.container.clientWidth / this.container.clientHeight;
     this.camera = new THREE.PerspectiveCamera(50, aspect, 0.1, 100);
@@ -81,7 +81,7 @@ export class SceneManager {
     // Environment map (gradient-like reflection)
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const envScene = new THREE.Scene();
-    envScene.background = new THREE.Color(0x2d2d44);
+    envScene.background = new THREE.Color(0xc0c0c0); // Light gray for reflections
     this.scene.environment = pmrem.fromScene(envScene).texture;
     pmrem.dispose();
 
@@ -258,7 +258,6 @@ export class SceneManager {
 
     // Mouse down - start dragging
     canvas.addEventListener('mousedown', (e) => {
-      if (this.assemblyMode) return; // Disable in assembly mode
       this.isDragging = true;
       this.previousMouseX = e.clientX;
       this.previousMouseY = e.clientY;
@@ -266,7 +265,7 @@ export class SceneManager {
 
     // Mouse move - rotate if dragging
     canvas.addEventListener('mousemove', (e) => {
-      if (!this.isDragging || this.assemblyMode) return;
+      if (!this.isDragging) return;
       
       const deltaX = e.clientX - this.previousMouseX;
       const deltaY = e.clientY - this.previousMouseY;
@@ -291,7 +290,6 @@ export class SceneManager {
 
     // Scroll - zoom
     canvas.addEventListener('wheel', (e) => {
-      if (this.assemblyMode) return; // Disable in assembly mode
       e.preventDefault();
       
       const zoomDelta = e.deltaY * 0.001;
@@ -396,16 +394,23 @@ export class SceneManager {
 
   /**
    * Update hand cursor position and appearance
+   * @param {number} handSize - Size of hand in frame for depth control
    */
-  updateHandCursor(centroidX, centroidY, isPinching, hasHand) {
+  updateHandCursor(centroidX, centroidY, isPinching, hasHand, handSize = 0.3) {
     if (!this.handCursor) return;
 
     // Show/hide based on hand detection
     this.handCursor.visible = hasHand;
     if (!hasHand) return;
 
+    // Map hand size to depth (same logic as held items)
+    const minHandSize = 0.15;
+    const maxHandSize = 0.5;
+    const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
+    const depth = 1.5 + (1 - normalizedSize) * 4; // Range: 1.5 (close) to 5.5 (far)
+
     // Update position
-    const targetPos = this.handToWorld(centroidX, centroidY);
+    const targetPos = this.handToWorld(centroidX, centroidY, depth);
     this.handCursor.position.lerp(targetPos, 0.3);
 
     // Change color based on pinch state
@@ -552,11 +557,12 @@ export class SceneManager {
   /**
    * Convert normalized hand coordinates (0-1) to 3D world position
    * Note: X is flipped to match the mirrored webcam display
+   * @param {number} depth - Distance from camera (default 3, range ~1.5 to 5)
    */
-  handToWorld(centroidX, centroidY) {
+  handToWorld(centroidX, centroidY, depth = 3) {
     // Flip X to match mirrored webcam (hand right = cursor right)
     const flippedX = 1 - centroidX;
-    return this.screenToWorld(flippedX, centroidY, 3);
+    return this.screenToWorld(flippedX, centroidY, depth);
   }
 
   /**
@@ -580,13 +586,70 @@ export class SceneManager {
 
   /**
    * Update held item position to follow hand
+   * @param {number} handSize - Size of hand in frame (larger = closer to camera)
    */
-  updateHeldItem(centroidX, centroidY) {
+  updateHeldItem(centroidX, centroidY, handSize = 0.3) {
     if (!this.heldItem) return;
     
-    const targetPos = this.handToWorld(centroidX, centroidY);
+    // Map hand size to depth
+    // Hand size typically ranges from ~0.2 (far) to ~0.5 (close)
+    // Larger hand (closer to camera) = object closer (smaller depth)
+    // Smaller hand (farther from camera) = object farther (larger depth)
+    const minHandSize = 0.15;
+    const maxHandSize = 0.5;
+    const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
+    
+    // Invert: bigger hand = closer = smaller depth value
+    const depth = 1.5 + (1 - normalizedSize) * 4; // Range: 1.5 (close) to 5.5 (far)
+    
+    const targetPos = this.handToWorld(centroidX, centroidY, depth);
     // Smooth follow
     this.heldItem.position.lerp(targetPos, 0.3);
+    
+    // Visual feedback - change ring color when in snap range
+    const closestPoint = this.getClosestPointOnModel(this.heldItem.position);
+    const distance = this.heldItem.position.distanceTo(closestPoint);
+    const inSnapRange = distance < 3.0;
+    
+    // Update ring color to indicate snap range
+    this.heldItem.traverse((child) => {
+      if (child.material && child.material.color) {
+        const isRing = child.geometry && child.geometry.type === 'TorusGeometry';
+        if (isRing) {
+          child.material.color.setHex(inSnapRange ? 0x00ff00 : 0x00ffff);
+          child.material.opacity = inSnapRange ? 1.0 : 0.6;
+        }
+      }
+    });
+  }
+
+  /**
+   * Get the bounding box of the model in world space
+   */
+  getModelBoundingBox() {
+    const box = new THREE.Box3();
+    if (this.modelGroup.children.length > 0) {
+      box.setFromObject(this.modelGroup);
+    }
+    return box;
+  }
+
+  /**
+   * Find the closest point on the model's bounding box to a given point
+   */
+  getClosestPointOnModel(point) {
+    const box = this.getModelBoundingBox();
+    if (box.isEmpty()) {
+      // Fallback to model center
+      const center = new THREE.Vector3();
+      this.modelGroup.getWorldPosition(center);
+      return center;
+    }
+    
+    // Clamp point to bounding box
+    const closest = new THREE.Vector3();
+    closest.copy(point).clamp(box.min, box.max);
+    return closest;
   }
 
   /**
@@ -598,15 +661,20 @@ export class SceneManager {
     const item = this.heldItem;
     item.userData.isHeld = false;
     
-    // Check distance to model center
-    const modelCenter = new THREE.Vector3();
-    this.modelGroup.getWorldPosition(modelCenter);
+    // Get model bounding box and check distance
+    const box = this.getModelBoundingBox();
+    const itemPos = item.position.clone();
     
-    const distance = item.position.distanceTo(modelCenter);
+    // Find closest point on model
+    const closestPoint = this.getClosestPointOnModel(itemPos);
+    const distance = itemPos.distanceTo(closestPoint);
     
-    if (distance < this.snapDistance + 1) {
-      // Snap to model - attach as child
-      const attachResult = this.attachToModel(item);
+    // More forgiving snap distance
+    const maxSnapDistance = 3.0;
+    
+    if (distance < maxSnapDistance || !box.isEmpty()) {
+      // Snap to model - attach at closest point
+      const attachResult = this.attachToModel(item, closestPoint);
       this.heldItem = null;
       return attachResult;
     } else {
@@ -618,20 +686,38 @@ export class SceneManager {
   }
 
   /**
-   * Attach item to the model group
+   * Attach item to the model group at a specific position
    */
-  attachToModel(item) {
+  attachToModel(item, snapPoint = null) {
     // Remove from assembly items
     const idx = this.assemblyItems.indexOf(item);
     if (idx > -1) this.assemblyItems.splice(idx, 1);
     
-    // Remove from scene and add to model group
+    // Remove from scene
     this.scene.remove(item);
     
+    // Remove the cyan ring when attached
+    item.traverse((child) => {
+      if (child.material && child.material.color) {
+        const color = child.material.color.getHex();
+        if (color === 0x00ffff) {
+          child.visible = false; // Hide the ring
+        }
+      }
+    });
+    
+    // Determine final position
+    let finalWorldPos;
+    if (snapPoint) {
+      finalWorldPos = snapPoint.clone();
+    } else {
+      finalWorldPos = item.position.clone();
+    }
+    
     // Convert world position to local model position
-    const worldPos = item.position.clone();
-    this.modelGroup.worldToLocal(worldPos);
-    item.position.copy(worldPos);
+    const localPos = finalWorldPos.clone();
+    this.modelGroup.worldToLocal(localPos);
+    item.position.copy(localPos);
     
     // Add to model group so it rotates with the model
     this.modelGroup.add(item);
@@ -641,7 +727,7 @@ export class SceneManager {
     // Create a new item of the same type in sidebar
     this.respawnSidebarItem(item.userData.type);
     
-    return { type: item.userData.type, position: worldPos };
+    return { type: item.userData.type, position: localPos };
   }
 
   /**
@@ -733,16 +819,16 @@ export class SceneManager {
     const rawX = gesture.centroidX ?? centroidX;
     const rawY = gesture.centroidY ?? centroidY;
 
-    // Update hand cursor position
-    this.updateHandCursor(rawX, rawY, gesture.isPinching, gesture.hasHand);
+    // Update hand cursor position with depth control based on hand size
+    this.updateHandCursor(rawX, rawY, gesture.isPinching, gesture.hasHand, gesture.handSize);
 
     if (gesture.isPinching) {
       if (!this.heldItem) {
         // Try to grab an item
         this.tryGrabItem(rawX, rawY);
       } else {
-        // Update held item position
-        this.updateHeldItem(rawX, rawY);
+        // Update held item position with depth control via hand size (distance from camera)
+        this.updateHeldItem(rawX, rawY, gesture.handSize);
       }
     } else {
       // Released pinch

@@ -5,9 +5,11 @@
  */
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
-// Landmark indices: 4 = thumb tip, 8 = index tip
+// Landmark indices
+const WRIST = 0;
 const THUMB_TIP = 4;
 const INDEX_TIP = 8;
+const MIDDLE_TIP = 12;
 
 export class HandController {
   constructor(options = {}) {
@@ -27,9 +29,11 @@ export class HandController {
     this.targetCentroidX = 0.5;
     this.targetCentroidY = 0.5;
     this.targetPinchDistance = 0;
+    this.targetHandSize = 0.3; // Approximate hand size in frame (0-1)
     this.currentCentroidX = 0.5;
     this.currentCentroidY = 0.5;
     this.currentPinchDistance = 0;
+    this.currentHandSize = 0.3;
     this.hasHand = false;
 
     // Normalization: map 0-1 screen coords to rotation range (radians)
@@ -144,10 +148,17 @@ export class HandController {
         const index = landmarks[INDEX_TIP];
         this.targetPinchDistance = this.euclideanDistance(thumb, index);
 
+        // Hand size: distance from wrist to middle finger tip
+        // Larger = hand closer to camera, smaller = hand farther
+        const wrist = landmarks[WRIST];
+        const middleTip = landmarks[MIDDLE_TIP];
+        this.targetHandSize = this.euclideanDistance(wrist, middleTip);
+
         this.onLandmarks(landmarks, this.ctx, this.canvas);
       } else {
         this.hasHand = false;
         this.targetPinchDistance = this.currentPinchDistance; // hold last value
+        this.targetHandSize = this.currentHandSize; // hold last value
         this.onLandmarks(null, this.ctx, this.canvas); // still redraw video when no hand
       }
     }
@@ -157,6 +168,7 @@ export class HandController {
     this.currentCentroidX = this.lerp(this.currentCentroidX, this.targetCentroidX, t);
     this.currentCentroidY = this.lerp(this.currentCentroidY, this.targetCentroidY, t);
     this.currentPinchDistance = this.lerp(this.currentPinchDistance, this.targetPinchDistance, t);
+    this.currentHandSize = this.lerp(this.currentHandSize, this.targetHandSize, t);
 
     // Emit gesture: map 0-1 centroid to rotation, pinch to zoom
     const rotationX = (this.currentCentroidY - 0.5) * this.rotationSensitivity;
@@ -172,6 +184,7 @@ export class HandController {
       centroidX: this.currentCentroidX,
       centroidY: this.currentCentroidY,
       pinchDistance: pinchNorm,
+      handSize: this.currentHandSize, // Hand size for depth control
       hasHand: this.hasHand,
       isPinching,
       pinchZone,
@@ -210,6 +223,7 @@ export class HandController {
       centroidX: this.currentCentroidX,
       centroidY: this.currentCentroidY,
       pinchDistance: this.currentPinchDistance,
+      handSize: this.currentHandSize,
       hasHand: this.hasHand,
       isPinching,
       pinchZone,
