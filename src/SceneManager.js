@@ -363,25 +363,38 @@ export class SceneManager {
    * Try to select an attached part at the given screen position
    */
   trySelectPart(screenX, screenY) {
+    if (this.attachedParts.length === 0) {
+      this.deselectPart();
+      return;
+    }
+    
     // Convert screen coordinates to normalized device coordinates
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((screenX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((screenY - rect.top) / rect.height) * 2 + 1;
 
-    // Raycast to find clicked objects
+    // Raycast to find clicked objects - check all attached parts and their children
     this.raycaster.setFromCamera(this.mouse, this.camera);
     
-    // Check attached parts
-    const intersects = this.raycaster.intersectObjects(this.attachedParts, true);
+    // Get all meshes from attached parts
+    const meshes = [];
+    for (const part of this.attachedParts) {
+      part.traverse((child) => {
+        if (child.isMesh) {
+          child.userData.parentPart = part; // Store reference to parent part
+          meshes.push(child);
+        }
+      });
+    }
+    
+    const intersects = this.raycaster.intersectObjects(meshes, false);
     
     if (intersects.length > 0) {
-      // Find the parent group (the actual part)
-      let part = intersects[0].object;
-      while (part.parent && !this.attachedParts.includes(part)) {
-        part = part.parent;
-      }
+      // Get the parent part from the clicked mesh
+      const clickedMesh = intersects[0].object;
+      const part = clickedMesh.userData.parentPart;
       
-      if (this.attachedParts.includes(part)) {
+      if (part && this.attachedParts.includes(part)) {
         this.selectPart(part);
         return;
       }
@@ -939,35 +952,11 @@ export class SceneManager {
       // Only allow grabbing/deleting if pinch was released first
       if (this.hasPinchReleased) {
         if (!this.heldItem) {
-          // Calculate hand position with depth based on hand size
-          const minHandSize = 0.15;
-          const maxHandSize = 0.5;
-          const normalizedSize = Math.max(0, Math.min(1, (gesture.handSize - minHandSize) / (maxHandSize - minHandSize)));
-          const depth = 1.5 + normalizedSize * 4;
-          const handPos = this.handToWorld(rawX, rawY, depth);
+          // First: always try to delete attached parts (priority)
+          const deleted = this.tryDeleteAttachedPart(rawX, rawY, gesture.handSize);
           
-          // Find closest sidebar item
-          let closestSidebarDist = Infinity;
-          for (const item of this.assemblyItems) {
-            const dist = item.position.distanceTo(handPos);
-            if (dist < closestSidebarDist) closestSidebarDist = dist;
-          }
-          
-          // Find closest attached part
-          let closestAttachedDist = Infinity;
-          for (const part of this.attachedParts) {
-            const partWorldPos = new THREE.Vector3();
-            part.getWorldPosition(partWorldPos);
-            const dist = handPos.distanceTo(partWorldPos);
-            if (dist < closestAttachedDist) closestAttachedDist = dist;
-          }
-          
-          // Prioritize attached parts for deletion - use larger threshold
-          if (this.attachedParts.length > 0 && closestAttachedDist < 2.0) {
-            // Try to delete attached part
-            this.tryDeleteAttachedPart(rawX, rawY, gesture.handSize);
-          } else if (closestSidebarDist < 0.6) {
-            // Try to grab sidebar item (smaller radius)
+          // If nothing was deleted, try to grab a sidebar item
+          if (!deleted) {
             this.tryGrabItem(rawX, rawY);
           }
         } else {
@@ -988,34 +977,42 @@ export class SceneManager {
   }
 
   /**
-   * Try to delete an attached part if hand is pinching near it
+   * Try to delete an attached part if hand is pinching directly on it
+   * Uses screen-space comparison for better accuracy
+   * @returns {boolean} true if a part was deleted
    */
   tryDeleteAttachedPart(centroidX, centroidY, handSize) {
-    if (this.attachedParts.length === 0) return;
+    if (this.attachedParts.length === 0) return false;
     
     // Don't allow deleting immediately after entering assembly mode
-    if (Date.now() - this.assemblyModeEnterTime < this.grabCooldown) return;
+    if (Date.now() - this.assemblyModeEnterTime < this.grabCooldown) return false;
 
-    // Get hand position in world space
-    const minHandSize = 0.15;
-    const maxHandSize = 0.5;
-    const normalizedSize = Math.max(0, Math.min(1, (handSize - minHandSize) / (maxHandSize - minHandSize)));
-    const depth = 1.5 + normalizedSize * 4;
-    const handPos = this.handToWorld(centroidX, centroidY, depth);
+    // Flip X to match mirrored display
+    const flippedX = 1 - centroidX;
     
-    // Find closest attached part
+    // Find closest attached part using SCREEN position (2D comparison)
     let closestPart = null;
-    let closestDistance = Infinity;
-    const deleteRadius = 1.5; // Increased radius for easier deletion
+    let closestScreenDist = Infinity;
+    const deleteScreenRadius = 0.15; // Screen-space radius (0-1 normalized)
     
     for (const part of this.attachedParts) {
       // Get world position of attached part
       const partWorldPos = new THREE.Vector3();
       part.getWorldPosition(partWorldPos);
       
-      const distance = handPos.distanceTo(partWorldPos);
-      if (distance < deleteRadius && distance < closestDistance) {
-        closestDistance = distance;
+      // Project to screen coordinates
+      const screenPos = partWorldPos.clone().project(this.camera);
+      // Convert from NDC (-1 to 1) to normalized (0 to 1)
+      const partScreenX = (screenPos.x + 1) / 2;
+      const partScreenY = 1 - (screenPos.y + 1) / 2; // Flip Y
+      
+      // Calculate 2D screen distance
+      const dx = flippedX - partScreenX;
+      const dy = centroidY - partScreenY;
+      const screenDist = Math.sqrt(dx * dx + dy * dy);
+      
+      if (screenDist < deleteScreenRadius && screenDist < closestScreenDist) {
+        closestScreenDist = screenDist;
         closestPart = part;
       }
     }
@@ -1023,7 +1020,9 @@ export class SceneManager {
     if (closestPart) {
       // Immediately delete the part on pinch
       this.deleteAttachedPart(closestPart);
+      return true;
     }
+    return false;
   }
 
   /**
