@@ -10,9 +10,15 @@ const overlayToggle = document.getElementById('webcam-overlay-toggle');
 const uploadInput = document.getElementById('upload-glb');
 const loadingEl = document.getElementById('loading');
 
+// Assembly Mode UI elements
+const assemblyModeBtn = document.getElementById('assembly-mode-btn');
+const assemblySidebar = document.getElementById('assembly-sidebar');
+const assemblyIndicator = document.getElementById('assembly-indicator');
+
 let sceneManager;
 let handController;
 let lastTime = 0;
+let assemblyModeActive = false;
 
 /**
  * Draw MediaPipe landmarks on overlay canvas for debugging
@@ -42,26 +48,40 @@ function drawWebcam(ctx, canvas, landmarks, gesture) {
     ctx.fillText('Waiting for camera...', w / 2, h / 2);
   }
 
-  // Draw zone divider line
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(w / 2, 0);
-  ctx.lineTo(w / 2, h);
-  ctx.stroke();
+  // Draw zone divider line (only in normal mode)
+  if (!assemblyModeActive) {
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(w / 2, 0);
+    ctx.lineTo(w / 2, h);
+    ctx.stroke();
 
-  // Draw zone labels
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-  ctx.font = '12px sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('ZOOM', w * 0.25, 15);
-  ctx.fillText('ROTATE', w * 0.75, 15);
+    // Draw zone labels
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ZOOM', w * 0.25, 15);
+    ctx.fillText('ROTATE', w * 0.75, 15);
+  } else {
+    // Assembly mode label
+    ctx.fillStyle = 'rgba(0, 200, 255, 0.9)';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('ASSEMBLY MODE', w / 2, 15);
+  }
 
   // Show pinch status
   if (gesture) {
-    const status = gesture.isPinching ? `PINCH: ${gesture.pinchZone.toUpperCase()}` : 'Open hand';
+    let status;
+    if (assemblyModeActive) {
+      status = gesture.isPinching ? 'GRABBING' : 'Pinch to grab';
+    } else {
+      status = gesture.isPinching ? `PINCH: ${gesture.pinchZone.toUpperCase()}` : 'Open hand';
+    }
     ctx.fillStyle = gesture.isPinching ? '#00ff00' : '#ffffff';
     ctx.font = 'bold 14px sans-serif';
+    ctx.textAlign = 'center';
     ctx.fillText(status, w / 2, h - 10);
     // Show pinch distance for debugging
     ctx.font = '10px sans-serif';
@@ -163,8 +183,17 @@ async function init() {
     const delta = (time - lastTime) / 1000;
     lastTime = time;
     const gesture = handController.getGesture();
-    sceneManager.updateFromGesture(gesture, delta);
+    
+    if (assemblyModeActive) {
+      // In assembly mode: handle grab/attach logic, model is frozen
+      sceneManager.updateAssemblyMode(gesture);
+    } else {
+      // Normal mode: rotate/zoom the model
+      sceneManager.updateFromGesture(gesture, delta);
+    }
+    
     sceneManager.render();
+    
     // Redraw webcam every frame
     if (!webcamOverlay.classList.contains('hidden')) {
       drawWebcam(webcamCtx, webcamCanvas, lastLandmarks, gesture);
@@ -190,6 +219,29 @@ uploadInput.addEventListener('change', (e) => {
     sceneManager.loadGLB(file);
   }
   e.target.value = '';
+});
+
+// Assembly Mode toggle
+assemblyModeBtn.addEventListener('click', () => {
+  if (!sceneManager) return;
+  
+  assemblyModeActive = sceneManager.toggleAssemblyMode();
+  
+  if (assemblyModeActive) {
+    assemblyModeBtn.textContent = 'Exit Assembly Mode';
+    assemblyModeBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+    assemblyModeBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+    assemblySidebar.classList.remove('hidden');
+    assemblySidebar.classList.add('flex');
+    assemblyIndicator.classList.remove('hidden');
+  } else {
+    assemblyModeBtn.textContent = 'Enter Assembly Mode';
+    assemblyModeBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+    assemblyModeBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+    assemblySidebar.classList.add('hidden');
+    assemblySidebar.classList.remove('flex');
+    assemblyIndicator.classList.add('hidden');
+  }
 });
 
 init().catch((err) => {

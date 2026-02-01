@@ -169,6 +169,7 @@ export class HandController {
     this.onGesture({
       rotationX,
       rotationY,
+      centroidX: this.currentCentroidX,
       centroidY: this.currentCentroidY,
       pinchDistance: pinchNorm,
       hasHand: this.hasHand,
@@ -206,6 +207,7 @@ export class HandController {
     return {
       rotationX: (this.currentCentroidY - 0.5) * this.rotationSensitivity,
       rotationY: (0.5 - this.currentCentroidX) * this.rotationSensitivity, // flipped horizontal
+      centroidX: this.currentCentroidX,
       centroidY: this.currentCentroidY,
       pinchDistance: this.currentPinchDistance,
       hasHand: this.hasHand,
